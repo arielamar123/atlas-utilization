@@ -50,6 +50,26 @@ def _particles(counts, *, charge=1):
 
 
 class ConfigDrivenParticleCollectionTests(unittest.TestCase):
+    def test_atlas_muons_do_not_require_an_optional_mass_branch(self):
+        muons = ak.Array([[
+            {"pt": 50_000.0, "eta": 0.0, "phi": 0.0, "charge": -1},
+            {"pt": 50_000.0, "eta": 0.0, "phi": math.pi, "charge": 1},
+        ]])
+
+        normalized = normalize_particle_collections(
+            ak.zip({"Muons": muons}, depth_limit=1),
+            ("Muons",),
+            "2024r-pp",
+        )
+        calculator = IMCalculator(normalized, 1, 1, 4, 1, 4)
+
+        self.assertEqual(normalized.Muons.fields, ["pt", "eta", "phi", "charge"])
+        self.assertAlmostEqual(
+            ak.to_list(calculator.calculate_invariant_mass(normalized))[0],
+            100.0002205,
+            places=5,
+        )
+
     def test_mixed_file_schemas_keep_every_requested_collection(self):
         jets = ak.Array([[{
             "pt": 100_000.0, "eta": 0.0, "phi": 0.0, "mass": 10_000.0

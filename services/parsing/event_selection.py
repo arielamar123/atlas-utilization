@@ -25,6 +25,10 @@ YAML_PARTICLE_KEYS: Dict[str, str] = {
 
 PERSISTED_PARTICLE_FIELDS = frozenset({"pt", "eta", "phi", "mass", "charge"})
 SUPPORTED_PARTICLE_COLLECTIONS = frozenset((*schemas.BASE_OBJECTS, "BJets"))
+# These particles have fixed masses in the invariant-mass calculator. Keeping
+# an optional source ``mass`` branch would make otherwise equivalent files have
+# incompatible nested schemas (ATLAS PHYSLITE muons commonly omit it).
+FIXED_MASS_COLLECTIONS = frozenset({"Electrons", "Muons", "Photons"})
 
 
 def canonical_particle_field_name(key: str) -> str:
@@ -44,7 +48,10 @@ def _fields_for_collection(collection: str, release_year: str) -> tuple[str, ...
         configured_fields = schemas.BASE_OBJECTS.get(source_collection, ())
 
     return tuple(
-        field for field in configured_fields if field in PERSISTED_PARTICLE_FIELDS
+        field
+        for field in configured_fields
+        if field in PERSISTED_PARTICLE_FIELDS
+        and not (field == "mass" and collection in FIXED_MASS_COLLECTIONS)
     )
 
 
