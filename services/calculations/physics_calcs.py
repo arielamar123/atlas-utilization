@@ -8,6 +8,7 @@ import awkward as ak
 import numpy as np
 import vector
 import gc
+import re
 from typing import Dict, Iterator, Tuple, Optional
 
 from services.calculations import consts
@@ -90,17 +91,15 @@ def group_by_final_state(events: ak.Array) -> Iterator[Tuple[str, ak.Array]]:
 
 def limit_particles_in_fs(final_state: str, threshold: int) -> str:
     fs_particles = final_state.split('_')
-    for str_amount_particle in fs_particles:
-        if len(str_amount_particle) < 2:
+    limited = []
+    for component in fs_particles:
+        match = re.fullmatch(r"(\d+)([emjgtb])", component)
+        if not match:
+            limited.append(component)
             continue
-        amount_to_calc = str_amount_particle[0]
-        particle_letter = str_amount_particle[1]
-        if amount_to_calc.isdigit():
-            amount = int(amount_to_calc)
-            if amount > threshold:
-                final_state = final_state.replace(
-                    f"{amount}{particle_letter}", f"{threshold}{particle_letter}")
-    return final_state
+        amount, particle_letter = match.groups()
+        limited.append(f"{min(int(amount), threshold)}{particle_letter}")
+    return "_".join(limited)
 
 
 def is_finalstate_contain_combination(final_state: str, combination: Dict) -> bool:
@@ -110,17 +109,14 @@ def is_finalstate_contain_combination(final_state: str, combination: Dict) -> bo
     """
     fs_particles = final_state.split('_')
     for str_amount_particle in fs_particles:
-        if len(str_amount_particle) < 2:
+        match = re.fullmatch(r"(\d+)([emjgtb])", str_amount_particle)
+        if not match:
             continue
-        amount_to_calc = str_amount_particle[0]
-        particle_letter = str_amount_particle[1]
+        amount_to_calc, particle_letter = match.groups()
         particle = consts.LETTER_PARTICLE_MAPPING.get(particle_letter)
 
         if particle is None or particle not in combination:
             continue
-        if not amount_to_calc.isdigit():
-            continue
-
         fs_particle_amount = int(amount_to_calc)
         value = combination[particle]
         count = get_count(value)

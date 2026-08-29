@@ -338,5 +338,24 @@ class CombinedLeptonSchemaTests(unittest.TestCase):
         self.assertEqual(ak.to_list(split["Muons"]["type"]), [[-13]])
 
 
+class MultiDigitFinalStateTests(unittest.TestCase):
+    def test_limit_parses_the_complete_multiplicity(self):
+        self.assertEqual(
+            IMCalculator._limit_particles_in_fs(
+                "0e_0m_10j_0g_0t_0b", threshold=4
+            ),
+            "0e_0m_4j_0g_0t_0b",
+        )
+
+    def test_containment_parses_the_complete_multiplicity(self):
+        final_state = "0e_0m_10j_0g_0t_0b"
+        self.assertTrue(IMCalculator.does_final_state_contain_combination(
+            final_state, {"Jets": (4, 6)}
+        ))
+        self.assertFalse(IMCalculator.does_final_state_contain_combination(
+            final_state, {"Jets": (5, 6)}
+        ))
+
+
 if __name__ == "__main__":
     unittest.main()

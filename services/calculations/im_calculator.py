@@ -6,6 +6,7 @@ Supports grouping by final state, filtering, and batch processing.
 """
 import awkward as ak
 import vector
+import re
 from typing import Dict, Iterator, List
 from collections import Counter
 
@@ -120,17 +121,15 @@ class IMCalculator:
     @staticmethod
     def _limit_particles_in_fs(final_state: str, threshold: int = 4) -> str:
         fs_particles = final_state.split('_')
-        for str_amount_particle in fs_particles:
-            if len(str_amount_particle) < 2:
+        limited = []
+        for component in fs_particles:
+            match = re.fullmatch(r"(\d+)([emjgtb])", component)
+            if not match:
+                limited.append(component)
                 continue
-            amount_to_calc = str_amount_particle[0]
-            particle_letter = str_amount_particle[1]
-            if amount_to_calc.isdigit():
-                amount = int(amount_to_calc)
-                if amount > threshold:
-                    final_state = final_state.replace(
-                        f"{amount}{particle_letter}", f"{threshold}{particle_letter}")
-        return final_state
+            amount, particle_letter = match.groups()
+            limited.append(f"{min(int(amount), threshold)}{particle_letter}")
+        return "_".join(limited)
 
     @staticmethod
     def does_final_state_contain_combination(final_state: str, combination: Dict) -> bool:
@@ -143,13 +142,10 @@ class IMCalculator:
         """
         fs_particles = final_state.split('_')
         for str_amount_particle in fs_particles:
-            if len(str_amount_particle) < 2:
+            match = re.fullmatch(r"(\d+)([emjgtb])", str_amount_particle)
+            if not match:
                 continue
-            amount_to_calc = str_amount_particle[0]
-            particle_letter = str_amount_particle[1]
-
-            if not amount_to_calc.isdigit():
-                continue
+            amount_to_calc, particle_letter = match.groups()
 
             particle = consts.LETTER_PARTICLE_MAPPING.get(particle_letter)
             if particle is None or particle not in combination:
