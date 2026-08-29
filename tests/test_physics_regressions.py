@@ -191,5 +191,27 @@ class MissingCollectionSelectionTests(unittest.TestCase):
             )
 
 
+class BTaggingValidationTests(unittest.TestCase):
+    def test_cms_threshold_key_matches_configuration(self):
+        jets = _particles([2])
+        direct = ak.Array([{
+            "Jet_btagDeepFlavB": [0.8, 0.2],
+        }])
+        objects = {"Jets": jets, "DirectObjects": direct}
+
+        split = FileParser._calculate_btagging_and_split(
+            objects, {"btagDeepFlavB": 0.5}
+        )
+
+        self.assertEqual(ak.to_list(ak.num(split["BJets"])), [1])
+        self.assertEqual(ak.to_list(ak.num(split["Jets"])), [1])
+
+    def test_enabled_tagging_rejects_missing_tagger_data(self):
+        with self.assertRaisesRegex(ValueError, "tagger branches are missing"):
+            FileParser._calculate_btagging_and_split(
+                {"Jets": _particles([1])}, {"DL1d": 2.51}
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

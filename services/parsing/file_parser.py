@@ -79,6 +79,11 @@ class FileParser:
             release_year
         )
 
+        # Auxiliary tagger branches are large and are irrelevant when tagging
+        # is disabled. Avoid reading them at all in that mode.
+        if not enable_jet_tagging:
+            obj_branches.pop("DirectObjects", None)
+
         if not obj_branches:
             logging.warning(f"No particles found in schema for file {file_path}")
             return None
@@ -100,7 +105,7 @@ class FileParser:
         if enable_jet_tagging:
             obj_events = FileParser._calculate_btagging_and_split(obj_events, jet_btagging_thresholds)
         # Strip out DirectObjects -- they are not physics objects!
-        obj_events.pop("DirectObjects")
+        obj_events.pop("DirectObjects", None)
         return ak.zip(obj_events, depth_limit=1)
 
     @staticmethod
@@ -116,12 +121,26 @@ class FileParser:
         # TODO Find a cleaner way to determine if dealing with nanoAOD, PHYSLITE, etc.
         # TODO Maybe add an explicit check if the algorithm-specific threshold exists in the configuration dict before
         # accessing it. However, I'd rather fail parsing then give false physics data.
+        if "Jets" not in obj_events:
+            raise ValueError("Jet tagging was enabled but no Jets collection was parsed")
+        if "DirectObjects" not in obj_events:
+            raise ValueError("Jet tagging was enabled but tagger branches are missing")
+        if not jet_btagging_thresholds:
+            raise ValueError("Jet tagging was enabled without tagger thresholds")
+
         if "Jet_btagDeepFlavB" in obj_events["DirectObjects"].fields:
             # CMS: Discriminant is pre-calculated as the Jet_btagDeepFlavB field. Can change to a different algorithm if needed.
             # See https://cms-opendata-workshop.github.io/workshop2024-lesson-physics-objects/instructor/05-btagging.html
-            is_bjet = obj_events["DirectObjects"]["Jet_btagDeepFlavB"] > jet_btagging_thresholds["Jet_btagDeepFlavB"]
+            if "btagDeepFlavB" not in jet_btagging_thresholds:
+                raise ValueError("Missing btagDeepFlavB threshold for CMS jets")
+            is_bjet = (
+                obj_events["DirectObjects"]["Jet_btagDeepFlavB"]
+                > jet_btagging_thresholds["btagDeepFlavB"]
+            )
         elif "BTagging_AntiKt4EMPFlowAuxDyn.DL1dv01_pb" in obj_events["DirectObjects"].fields:
             # ATLAS
+            if "DL1d" not in jet_btagging_thresholds:
+                raise ValueError("Missing DL1d threshold for ATLAS jets")
             indices = obj_events["DirectObjects"]["AnalysisJetsAuxDyn.btaggingLink/AnalysisJetsAuxDyn.btaggingLink.m_persIndex"]
             pb = obj_events["DirectObjects"]["BTagging_AntiKt4EMPFlowAuxDyn.DL1dv01_pb"][indices]
             pc = obj_events["DirectObjects"]["BTagging_AntiKt4EMPFlowAuxDyn.DL1dv01_pc"][indices]
@@ -131,7 +150,9 @@ class FileParser:
             dl1d = np.log(pb / (fc * pc + (1 - fc) * pu))
             is_bjet = dl1d > jet_btagging_thresholds["DL1d"]
         else:
-            return obj_events
+            raise ValueError(
+                "Jet tagging was enabled but no supported tagger discriminant was parsed"
+            )
         obj_events["BJets"] = obj_events["Jets"][is_bjet]
         obj_events["Jets"] = obj_events["Jets"][~is_bjet]
         return obj_events
