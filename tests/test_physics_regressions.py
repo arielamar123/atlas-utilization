@@ -179,9 +179,14 @@ class GlobalFinalStateThresholdTests(unittest.TestCase):
             paths = [os.path.join(tmpdir, f"im_batch_{i}.sqlite") for i in (1, 2)]
             for index, path in enumerate(paths, start=1):
                 writer = SqliteArrayShardWriter(path)
+                writer.record_final_state_count(
+                    "2e_0m_0j_0g_0t_0b", 6
+                )
                 writer.append_array(
                     f"parsed_batch{index}_FS_2e_0m_0j_0g_0t_0b_IM_e0e1",
-                    np.arange(6),
+                    # Combination-specific cuts may retain fewer entries than
+                    # the population threshold must count.
+                    np.arange(1),
                 )
                 writer.close()
 
