@@ -4,6 +4,7 @@ import awkward as ak
 import math
 
 from services.calculations.im_calculator import IMCalculator
+from services.parsing.file_parser import FileParser
 
 
 def _particles(counts, *, charge=1):
@@ -75,6 +76,32 @@ class InvariantMassUnitTests(unittest.TestCase):
         mass = ak.to_list(calculator.calculate_invariant_mass(events))[0]
 
         self.assertAlmostEqual(mass, 100.0002205, places=5)
+
+
+class RootBatchIntegrityTests(unittest.TestCase):
+    def test_one_failed_basket_rejects_the_whole_file(self):
+        class FakeTree:
+            def arrays(self, branches, entry_start, entry_stop, library):
+                if entry_start == 2:
+                    raise OSError("corrupt basket")
+                return ak.Array({
+                    "E.pt": [[1.0], [2.0]],
+                    "E.eta": [[0.0], [0.0]],
+                    "E.phi": [[0.0], [0.0]],
+                })
+
+        mapping = {
+            "Electrons": {
+                "E.pt": "pt",
+                "E.eta": "eta",
+                "E.phi": "phi",
+            }
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "Incomplete ROOT read"):
+            FileParser._read_file_in_batches(
+                FakeTree(), set(mapping["Electrons"]), mapping, 4, 2
+            )
 
 
 if __name__ == "__main__":

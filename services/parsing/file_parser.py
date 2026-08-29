@@ -452,8 +452,9 @@ class FileParser:
                     library="ak"
                 )
             except Exception as e:
-                logging.warning(f"Error reading batch {entry_start}-{entry_stop}: {e}")
-                continue
+                raise RuntimeError(
+                    f"Incomplete ROOT read: batch {entry_start}-{entry_stop} failed"
+                ) from e
             
             for obj_name, branch_mapping in obj_branches.items():
                 available_branches = [
