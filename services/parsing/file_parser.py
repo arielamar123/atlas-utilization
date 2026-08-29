@@ -488,50 +488,34 @@ class FileParser:
         n_entries: int,
         batch_size: int
     ) -> dict[str, ak.Array]:
-        obj_events_by_quantities = {
-            obj_name: [] for obj_name in obj_branches.keys()
-        }
-        
-        is_file_big = n_entries > batch_size
-        if is_file_big:
-            entry_ranges = [
-                (start, min(start + batch_size, n_entries))
-                for start in range(0, n_entries, batch_size)
-            ]
-        else:
-            entry_ranges = [(0, n_entries)]
-        
-        for entry_start, entry_stop in entry_ranges:
-            try:
-                batch_data = tree.arrays(
-                    all_branches,
-                    entry_start=entry_start,
-                    entry_stop=entry_stop,
-                    library="ak"
-                )
-            except Exception as e:
-                raise RuntimeError(
-                    f"Incomplete ROOT read: batch {entry_start}-{entry_stop} failed"
-                ) from e
-            
-            for obj_name, branch_mapping in obj_branches.items():
-                available_branches = [
-                    b for b in branch_mapping.keys() if b in batch_data.fields
-                ]
-                if available_branches:
-                    subset = batch_data[available_branches]
-                    if len(subset) > 0:
-                        obj_events_by_quantities[obj_name].append(subset)
-        
+        # The parser returns one complete file-level EventBatch, so retaining a
+        # list of 40k-entry arrays and concatenating it afterward did not bound
+        # memory. It only added remote round trips and a second full-size copy.
+        # Keep ``batch_size`` in the API for compatibility with callers.
+        del batch_size
+        try:
+            file_data = tree.arrays(
+                all_branches,
+                entry_start=0,
+                entry_stop=n_entries,
+                library="ak",
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Incomplete ROOT read: file range 0-{n_entries} failed"
+            ) from e
+
         result = {}
-        for obj_name, chunks in obj_events_by_quantities.items():
-            if chunks:
-                concatenated = ak.concatenate(chunks)
+        for obj_name, branch_mapping in obj_branches.items():
+            available_branches = [
+                branch for branch in branch_mapping if branch in file_data.fields
+            ]
+            if available_branches:
                 result[obj_name] = ak.zip({
-                    quantity: concatenated[full_branch]
-                    for full_branch, quantity in obj_branches[obj_name].items()
+                    quantity: file_data[full_branch]
+                    for full_branch, quantity in branch_mapping.items()
                 })
-        
+
         return result
     
     @staticmethod

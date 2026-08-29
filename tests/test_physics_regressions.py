@@ -223,14 +223,12 @@ class InvariantMassUnitTests(unittest.TestCase):
 class RootBatchIntegrityTests(unittest.TestCase):
     def test_one_failed_basket_rejects_the_whole_file(self):
         class FakeTree:
+            def __init__(self):
+                self.calls = 0
+
             def arrays(self, branches, entry_start, entry_stop, library):
-                if entry_start == 2:
-                    raise OSError("corrupt basket")
-                return ak.Array({
-                    "E.pt": [[1.0], [2.0]],
-                    "E.eta": [[0.0], [0.0]],
-                    "E.phi": [[0.0], [0.0]],
-                })
+                self.calls += 1
+                raise OSError("corrupt basket")
 
         mapping = {
             "Electrons": {
@@ -240,10 +238,43 @@ class RootBatchIntegrityTests(unittest.TestCase):
             }
         }
 
+        tree = FakeTree()
         with self.assertRaisesRegex(RuntimeError, "Incomplete ROOT read"):
             FileParser._read_file_in_batches(
-                FakeTree(), set(mapping["Electrons"]), mapping, 4, 2
+                tree, set(mapping["Electrons"]), mapping, 4, 2
             )
+        self.assertEqual(tree.calls, 1)
+
+    def test_complete_file_is_read_once_without_reconstruction_copy(self):
+        class FakeTree:
+            def __init__(self):
+                self.calls = 0
+
+            def arrays(self, branches, entry_start, entry_stop, library):
+                self.calls += 1
+                self.asserted_range = (entry_start, entry_stop)
+                return ak.Array({
+                    "E.pt": [[1.0], [2.0], [3.0], [4.0]],
+                    "E.eta": [[0.0], [0.0], [0.0], [0.0]],
+                    "E.phi": [[0.0], [0.0], [0.0], [0.0]],
+                })
+
+        mapping = {
+            "Electrons": {
+                "E.pt": "pt",
+                "E.eta": "eta",
+                "E.phi": "phi",
+            }
+        }
+        tree = FakeTree()
+
+        parsed = FileParser._read_file_in_batches(
+            tree, set(mapping["Electrons"]), mapping, 4, 2
+        )
+
+        self.assertEqual(tree.calls, 1)
+        self.assertEqual(tree.asserted_range, (0, 4))
+        self.assertEqual(ak.to_list(parsed["Electrons"].pt), [[1.0], [2.0], [3.0], [4.0]])
 
 
 class ParsingFailureAccountingTests(unittest.TestCase):
