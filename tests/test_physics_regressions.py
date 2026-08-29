@@ -23,6 +23,7 @@ from services.storage.sqlite_shards import (
 )
 from services.pipelines.im_pipeline import _apply_ossf_dilepton_cut
 from orchestration.handlers.parsing_handler import select_metadata_for_parsing
+from orchestration.handlers.mass_calculation_handler import MassCalculationHandler
 from services.metadata.fetcher import MetadataFetcher
 from domain.events import EventBatch
 from services.parsing.event_accumulator import EventAccumulator
@@ -371,6 +372,16 @@ class MultiDigitFinalStateTests(unittest.TestCase):
         self.assertFalse(IMCalculator.does_final_state_contain_combination(
             final_state, {"Jets": (5, 6)}
         ))
+
+
+class MassFailurePropagationTests(unittest.TestCase):
+    def test_any_failed_input_fails_the_mass_stage(self):
+        with self.assertRaisesRegex(
+            RuntimeError, "Invariant-mass calculation failed for 1 file"
+        ):
+            MassCalculationHandler._raise_mass_failures([
+                ("parsed_bad.root", ValueError("broken event layout"))
+            ])
 
 
 if __name__ == "__main__":

@@ -113,6 +113,7 @@ class MassCalculationHandler(StateHandler):
             return context, self._determine_next_state(context)
 
         total_created_chunks = 0
+        failed_files = []
 
         try:
             for root_file_path in root_files:
@@ -129,12 +130,15 @@ class MassCalculationHandler(StateHandler):
                     if created:
                         total_created_chunks += len(created)
                 except Exception as exc:
+                    failed_files.append((root_file_path.name, exc))
                     self.logger.error(
                         f"Error processing {root_file_path.name}: {exc}",
                         exc_info=True,
                     )
         finally:
             sqlite_writer.close()
+
+        self._raise_mass_failures(failed_files)
 
         elapsed = (datetime.now() - start).total_seconds()
         self.logger.info(
@@ -150,6 +154,18 @@ class MassCalculationHandler(StateHandler):
     # ------------------------------------------------------------------ #
     # helpers
     # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _raise_mass_failures(failed_files) -> None:
+        if not failed_files:
+            return
+        details = "; ".join(
+            f"{filename}: {error}" for filename, error in failed_files[:5]
+        )
+        raise RuntimeError(
+            f"Invariant-mass calculation failed for {len(failed_files)} file(s): "
+            f"{details}"
+        )
 
     @staticmethod
     def _reconstruct_particle_arrays(tree) -> ak.Array:
