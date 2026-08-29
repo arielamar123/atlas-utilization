@@ -2,10 +2,19 @@ import unittest
 
 import awkward as ak
 import math
+import os
+import tempfile
+
+import numpy as np
 
 from services.calculations.im_calculator import IMCalculator
 from services.parsing.file_parser import FileParser
 from services.parsing.threaded_processor import ThreadedFileProcessor
+from services.storage.sqlite_shards import (
+    SqliteArrayShardWriter,
+    list_signatures,
+    prune_final_states_below_min_events,
+)
 
 
 def _particles(counts, *, charge=1):
@@ -124,6 +133,33 @@ class ParsingFailureAccountingTests(unittest.TestCase):
         self.assertEqual(batches, [])
         self.assertEqual(len(failures), 1)
         self.assertEqual(failures[0][0], "bad.root")
+
+
+class GlobalFinalStateThresholdTests(unittest.TestCase):
+    def test_counts_are_aggregated_across_parsing_chunks(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "im.sqlite")
+            writer = SqliteArrayShardWriter(path)
+            writer.append_array(
+                "parsed_chunk1_FS_2e_0m_0j_0g_0t_0b_IM_e0e1",
+                np.arange(6),
+            )
+            writer.append_array(
+                "parsed_chunk2_FS_2e_0m_0j_0g_0t_0b_IM_e0e1",
+                np.arange(6),
+            )
+            writer.append_array(
+                "parsed_chunk1_FS_0e_2m_0j_0g_0t_0b_IM_m0m1",
+                np.arange(4),
+            )
+            writer.close()
+
+            removed = prune_final_states_below_min_events(path, 10)
+            signatures = list_signatures(path)
+
+            self.assertEqual(removed, ["_FS_0e_2m_0j_0g_0t_0b"])
+            self.assertEqual(len(signatures), 2)
+            self.assertTrue(all("_FS_2e_" in sig for sig in signatures))
 
 
 if __name__ == "__main__":
