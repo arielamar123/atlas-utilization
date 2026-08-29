@@ -278,6 +278,40 @@ class InvariantMassUnitTests(unittest.TestCase):
 
 
 class RootBatchIntegrityTests(unittest.TestCase):
+    def test_advertised_unreadable_branch_fails_closed(self):
+        class FakeTree:
+            num_entries = 1
+
+            def keys(self):
+                return {
+                    "AnalysisJetsAuxDyn.pt",
+                    "AnalysisJetsAuxDyn.eta",
+                    "AnalysisJetsAuxDyn.phi",
+                    "AnalysisJetsAuxDyn.m",
+                }
+
+            def arrays(self, *args, **kwargs):
+                raise OSError("advertised branch is unreadable")
+
+        class FakeRootFile:
+            def keys(self):
+                return ["CollectionTree;1"]
+
+            def __getitem__(self, name):
+                return FakeTree()
+
+        with self.assertRaisesRegex(RuntimeError, "Incomplete ROOT read"):
+            FileParser._parse_opened_file(
+                FakeRootFile(),
+                ["CollectionTree"],
+                "2024r-pp",
+                40_000,
+                "broken.root",
+                False,
+                None,
+                ("Jets",),
+            )
+
     def test_one_failed_basket_rejects_the_whole_file(self):
         class FakeTree:
             def __init__(self):

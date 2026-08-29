@@ -108,12 +108,10 @@ class FileParser:
             logging.warning(f"No particles found in schema for file {file_path}")
             return None
         
-        obj_branches = FileParser._filter_accessible_branches(tree, obj_branches)
-        
-        if not obj_branches:
-            logging.warning(f"No accessible particles found in file {file_path}")
-            return None
-        
+        # Branch presence was already established from the TTree keys. The
+        # former one-entry accessibility probe added a remote round trip for
+        # every file and silently dropped unreadable physics fields. The full
+        # read below now validates all advertised branches and fails closed.
         all_branches = set(itertools.chain.from_iterable(obj_branches.values()))
         is_large_remote_read = FileParser._should_limit_remote_read(
             file_path,
@@ -512,55 +510,6 @@ class FileParser:
         ref_system: set[str] = {'phi', 'eta', 'pt'}
     ) -> bool:
         return ref_system.issubset(set(available_fields))
-    
-    @staticmethod
-    def _filter_accessible_branches(
-        tree,
-        obj_branches: dict[str, dict[str, str]]
-    ) -> dict[str, dict[str, str]]:
-        """
-        Test branch accessibility and filter out inaccessible ones.
-        
-        Reads ONE entry with ALL candidate branches at once to minimize
-        HTTP round-trips for remote ROOT files.
-        """
-        all_candidate_branches = []
-        for branch_mapping in obj_branches.values():
-            all_candidate_branches.extend(branch_mapping.keys())
-        
-        accessible_set = set()
-        try:
-            test_arr = tree.arrays(
-                all_candidate_branches,
-                entry_start=0, entry_stop=1,
-                library="ak"
-            )
-            accessible_set = set(test_arr.fields)
-        except Exception:
-            for branch_path in all_candidate_branches:
-                try:
-                    test_arr = tree.arrays(
-                        branch_path,
-                        entry_start=0, entry_stop=1,
-                        library="ak"
-                    )
-                    if branch_path in test_arr.fields:
-                        accessible_set.add(branch_path)
-                except Exception:
-                    continue
-        
-        accessible_obj_branches = {}
-        for obj_name, branch_mapping in obj_branches.items():
-            accessible_branches = {
-                bp: qty for bp, qty in branch_mapping.items()
-                if bp in accessible_set
-            }
-            if accessible_branches and FileParser._can_calculate_inv_mass(
-                list(accessible_branches.values())
-            ) or obj_name == "DirectObjects":
-                accessible_obj_branches[obj_name] = accessible_branches
-        
-        return accessible_obj_branches
     
     @staticmethod
     def _read_file_in_batches(
