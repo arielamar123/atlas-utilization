@@ -106,6 +106,12 @@ mass_calculation_task_config:
 python main.py
 ```
 
+For a histogram-enabled single-job run, this is one process. The state machine
+automatically performs the required global-range scan after post-processing,
+creates the histograms, and generates the final plots once. The legacy
+`--scan-only` command is only needed by distributed batch workflows, where one
+shared scan must precede multiple histogram jobs.
+
 Output appears in `./output/{run_name}_{timestamp}/`.
 
 ### Local — full run
@@ -187,5 +193,6 @@ python main.py --help
                              histogram_creation)
   --run-dir DIR              Use this directory instead of creating a new one
   --merge-only               Merge batch outputs (hadd + aggregate stats + plots)
+  --scan-only                Batch workflow: build one shared global-ranges file
   --plots-only               Re-generate plots from an existing run
 ```

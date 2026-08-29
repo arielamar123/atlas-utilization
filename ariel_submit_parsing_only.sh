@@ -1,10 +1,10 @@
 #!/bin/bash
 # ===========================================================================
-# submit_parsing_only.sh
+# ariel_submit_parsing_only.sh (legacy filename)
 #
-# Step 1: Run ONLY the parsing stage in a single job.
-#         Mass calculation is intentionally excluded — run separately
-#         after all data is parsed using submit_mass_calc.sh
+# Submit the complete single-job pipeline. The state machine performs parsing,
+# invariant-mass calculation, post-processing, the global-range scan,
+# histogram creation, and final plot generation in one Python process.
 #
 # Usage:
 #   bash submit_parsing_only.sh
@@ -34,16 +34,12 @@ cp "${PIPELINE_DIR}/${CONFIG}" "${LOG_DIR}/"
 cp "${PIPELINE_DIR}/ariel_submit_parsing_only.sh" "${LOG_DIR}/"
 
 echo "=============================================="
-echo "ATLAS Pipeline — Parsing Only"
+echo "ATLAS Pipeline — Complete Single-Process Run"
 echo "=============================================="
 echo "Config   : ${CONFIG}"
 echo "Run dir  : ${RUN_DIR}"
 echo "Walltime : ${WALLTIME}"
 echo "=============================================="
-echo ""
-echo "After parsing completes, run mass calculation with:"
-echo "  RUN_DIR=${RUN_DIR} bash submit_mass_calc.sh"
-echo ""
 
 JOB_ID=$(qsub <<EOF
 #!/bin/bash
@@ -66,21 +62,9 @@ source ${PIPELINE_DIR}/atlasenv/bin/activate
 python -u main.py \
     --config "${CONFIG}" \
     --run-dir "${RUN_DIR}" \
-    --tasks parsing,mass_calculating,post_processing \
+    --tasks parsing,mass_calculating,post_processing,histogram_creation \
     > "${LOG_DIR}/parsing.out" \
-    2> "${LOG_DIR}/parsing.err" && \
-python -u main.py \
-    --config "${CONFIG}" \
-    --run-dir "${RUN_DIR}" \
-    --scan-only \
-    >> "${LOG_DIR}/parsing.out" \
-    2>> "${LOG_DIR}/parsing.err" && \
-python -u main.py \
-    --config "${CONFIG}" \
-    --run-dir "${RUN_DIR}" \
-    --tasks histogram_creation \
-    >> "${LOG_DIR}/parsing.out" \
-    2>> "${LOG_DIR}/parsing.err"
+    2> "${LOG_DIR}/parsing.err"
 EOF
 )
 

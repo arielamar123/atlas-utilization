@@ -3,8 +3,8 @@
 # PBS Job Submission Script for ATLAS Pipeline
 #
 # Single-job  (NUM_JOBS=1) — one PBS job runs the full pipeline.
-# Multi-job   (NUM_JOBS>1) — PBS array splits files across N jobs,
-#                            then a dependent merge job runs.
+# Multi-job   (NUM_JOBS>1) — processing array → one shared range scan →
+#                            histogram array → merge/plots.
 #
 # All pipeline settings (tasks, paths, stage inputs) live in config.yaml.
 # This script only handles PBS resource allocation and job submission.
@@ -22,6 +22,8 @@ CPUS_PER_JOB=4
 MEM_PER_JOB="20gb"
 WALLTIME="72:00:00"
 MERGE_WALLTIME="04:00:00"
+SCAN_WALLTIME="04:00:00"
+HIST_WALLTIME="12:00:00"
 QUEUE="N"
 
 PIPELINE_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -98,6 +100,7 @@ source \${ATLAS_LOCAL_ROOT_BASE}/user/atlasLocalSetup.sh
 lsetup "views LCG_107 x86_64-el9-gcc14-opt"
 
 python -u main.py --config "${CONFIG}" \
+    --tasks parsing,mass_calculating,post_processing \
     --batch-job-index \${PBS_ARRAY_INDEX} \
     --total-batch-jobs ${NUM_JOBS} \
     --run-dir "${RUN_DIR}" \
@@ -108,7 +111,60 @@ EOF
 
     echo "Submitted array: ${ARRAY_JOB_ID}"
 
-    MERGE_JOB_ID=$(qsub -W depend=afterok:"${ARRAY_JOB_ID}" <<EOF
+    SCAN_JOB_ID=$(qsub -W depend=afterok:"${ARRAY_JOB_ID}" <<EOF
+#!/bin/bash
+#PBS -q ${QUEUE}
+#PBS -N atlas_scan
+#PBS -o ${LOG_DIR}/
+#PBS -e ${LOG_DIR}/
+#PBS -l select=1:ncpus=2:mem=16gb
+#PBS -l io=5
+#PBS -l walltime=${SCAN_WALLTIME}
+
+cd ${PIPELINE_DIR}
+
+export ATLAS_LOCAL_ROOT_BASE=/cvmfs/atlas.cern.ch/repo/ATLASLocalRootBase
+source \${ATLAS_LOCAL_ROOT_BASE}/user/atlasLocalSetup.sh
+lsetup "views LCG_107 x86_64-el9-gcc14-opt"
+
+python -u main.py --config "${CONFIG}" \
+    --scan-only \
+    --run-dir "${RUN_DIR}" \
+    > "${LOG_DIR}/scan.out" \
+    2> "${LOG_DIR}/scan.err"
+EOF
+    )
+    echo "Submitted scan: ${SCAN_JOB_ID} (depends on ${ARRAY_JOB_ID})"
+
+    HIST_ARRAY_JOB_ID=$(qsub -W depend=afterok:"${SCAN_JOB_ID}" <<EOF
+#!/bin/bash
+#PBS -q ${QUEUE}
+#PBS -N atlas_hist
+#PBS -o ${LOG_DIR}/
+#PBS -e ${LOG_DIR}/
+#PBS -l select=1:ncpus=${CPUS_PER_JOB}:mem=${MEM_PER_JOB}
+#PBS -l io=5
+#PBS -l walltime=${HIST_WALLTIME}
+#PBS -J 1-${NUM_JOBS}
+
+cd ${PIPELINE_DIR}
+
+export ATLAS_LOCAL_ROOT_BASE=/cvmfs/atlas.cern.ch/repo/ATLASLocalRootBase
+source \${ATLAS_LOCAL_ROOT_BASE}/user/atlasLocalSetup.sh
+lsetup "views LCG_107 x86_64-el9-gcc14-opt"
+
+python -u main.py --config "${CONFIG}" \
+    --tasks histogram_creation \
+    --batch-job-index \${PBS_ARRAY_INDEX} \
+    --total-batch-jobs ${NUM_JOBS} \
+    --run-dir "${RUN_DIR}" \
+    > "${LOG_DIR}/hist_\${PBS_ARRAY_INDEX}.out" \
+    2> "${LOG_DIR}/hist_\${PBS_ARRAY_INDEX}.err"
+EOF
+    )
+    echo "Submitted histogram array: ${HIST_ARRAY_JOB_ID} (depends on ${SCAN_JOB_ID})"
+
+    MERGE_JOB_ID=$(qsub -W depend=afterok:"${HIST_ARRAY_JOB_ID}" <<EOF
 #!/bin/bash
 #PBS -q ${QUEUE}
 #PBS -N atlas_merge
@@ -132,7 +188,7 @@ python -u main.py --config "${CONFIG}" \
 EOF
     )
 
-    echo "Submitted merge: ${MERGE_JOB_ID} (depends on ${ARRAY_JOB_ID})"
+    echo "Submitted merge: ${MERGE_JOB_ID} (depends on ${HIST_ARRAY_JOB_ID})"
 
 fi
 

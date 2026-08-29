@@ -4,6 +4,11 @@ PipelineExecutor - High-level pipeline orchestrator.
 Wires together all services and executes the state machine.
 Supports consolidated plot generation from output data.
 
+Architecture (single-job mode):
+  One state-machine run performs parsing → mass calculation → post-processing
+  → global-range scan → histogram creation. Final plots are generated once by
+  main.py after successful completion.
+
 Architecture (multi-job mode):
   Each batch job runs parsing + mass_calc + post_processing and saves:
     - batch_N_stats.json   → logs/
@@ -33,6 +38,7 @@ from orchestration.handlers import (
     ParsingHandler,
     MassCalculationHandler,
     PostProcessingHandler,
+    GlobalRangeScanHandler,
     HistogramCreationHandler,
 )
 from services.metadata.fetcher import MetadataFetcher
@@ -139,30 +145,20 @@ class PipelineExecutor:
         bumpnet signature. Saves result to logs/global_ranges.json.
         Must run before histogram creation batches.
         """
-        from services.pipelines.histograms_pipeline import compute_global_ranges, save_global_ranges
-
         proc_dir = os.path.join(run_dir, "im_arrays_processed")
         logs_dir = os.path.join(run_dir, "logs")
         os.makedirs(logs_dir, exist_ok=True)
 
-        sqlite_files = sorted([
-            f for f in os.listdir(proc_dir) if f.endswith(".sqlite")
-        ])
-        if not sqlite_files:
-            self.logger.error(f"No processed SQLite files found in {proc_dir}")
-            raise RuntimeError(f"No processed SQLite files found in {proc_dir}")
-
-        self.logger.info(f"Scanning {len(sqlite_files)} SQLite files for global ranges...")
-
         hc = self.config.histogram_creation_config
         exclude_outliers = hc.exclude_outliers if hc else True
-
-        ranges = compute_global_ranges(sqlite_files, proc_dir, exclude_outliers=exclude_outliers)
-
         output_path = os.path.join(logs_dir, "global_ranges.json")
-        save_global_ranges(ranges, output_path)
+        summary = GlobalRangeScanHandler.scan(
+            input_dir=proc_dir,
+            output_path=output_path,
+            exclude_outliers=exclude_outliers,
+        )
         self.logger.info(
-            f"Saved global ranges for {len(ranges)} signatures to {output_path}"
+            f"Saved global ranges for {summary['range_count']} signatures to {output_path}"
         )
 
     def merge_outputs(self, run_dir: str):
@@ -784,7 +780,15 @@ class PipelineExecutor:
         elif tasks.do_post_processing:
             initial_state = PipelineState.POST_PROCESSING
         elif tasks.do_histogram_creation:
-            initial_state = PipelineState.HISTOGRAM_CREATION
+            hc = self.config.histogram_creation_config
+            if (
+                hc
+                and hc.use_bumpnet_naming
+                and self.config.batch_job_index is None
+            ):
+                initial_state = PipelineState.GLOBAL_RANGE_SCAN
+            else:
+                initial_state = PipelineState.HISTOGRAM_CREATION
         else:
             initial_state = PipelineState.IDLE
         
@@ -843,6 +847,8 @@ class PipelineExecutor:
         if self.config.tasks.do_post_processing:
             handlers[PipelineState.POST_PROCESSING] = PostProcessingHandler()
         if self.config.tasks.do_histogram_creation:
+            if self.config.batch_job_index is None:
+                handlers[PipelineState.GLOBAL_RANGE_SCAN] = GlobalRangeScanHandler()
             handlers[PipelineState.HISTOGRAM_CREATION] = HistogramCreationHandler()
         
         return handlers

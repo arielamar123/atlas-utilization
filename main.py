@@ -113,7 +113,7 @@ def parse_args():
     post_group = parser.add_argument_group("Post-Run Options")
     post_group.add_argument(
         "--scan-only", action="store_true",
-        help="Pre-scan processed arrays to compute global histogram ranges"
+        help="Legacy/batch mode: pre-scan processed arrays. Single-job histogram pipelines scan automatically."
     )
     post_group.add_argument(
         "--merge-only", action="store_true",
@@ -271,11 +271,15 @@ def main():
         if config.batch_job_index is not None:
             executor.save_batch_stats(run_dir, config.batch_job_index, final_context)
 
-        # Generate plots only for single-job runs (batch plots are deferred to merge)
-        if config.batch_job_index is None:
-            executor.generate_plots_from_output(run_dir)
-
         if final_context.is_successful:
+            # Plot exactly once, after the final histogram state. Partial-stage
+            # runs can request plots explicitly with --plots-only; generating
+            # them here would repeat expensive output scans in staged workflows.
+            if (
+                config.batch_job_index is None
+                and config.tasks.do_histogram_creation
+            ):
+                executor.generate_plots_from_output(run_dir)
             logger.info(f"✓ Pipeline completed successfully{batch_info}")
             return 0
         else:

@@ -57,37 +57,9 @@ RUN_DIR="${ARIEL_RUN_DIR:-${BASE_OUTPUT_DIR}/${RUN_NAME}_$(date +%Y%m%d_%H%M%S)}
 
 echo "Ariel pipeline run directory: ${RUN_DIR}"
 
-# A dry run only validates the complete configuration. A range scan cannot run
-# until the first pass has produced processed SQLite shards.
-for argument in "$@"; do
-    if [[ "${argument}" == "--dry-run" ]]; then
-        exec "${PYTHON_BIN}" -u main.py \
-            --config "${CONFIG_PATH}" \
-            "$@" \
-            --run-dir "${RUN_DIR}" \
-            --tasks parsing,mass_calculating,post_processing,histogram_creation
-    fi
-done
-
-echo "[1/3] Fetching, parsing, calculating invariant masses, and post-processing"
-"${PYTHON_BIN}" -u main.py \
+echo "Running complete pipeline in one process"
+exec "${PYTHON_BIN}" -u main.py \
     --config "${CONFIG_PATH}" \
     "$@" \
     --run-dir "${RUN_DIR}" \
-    --tasks parsing,mass_calculating,post_processing
-
-echo "[2/3] Scanning processed arrays for global histogram ranges"
-"${PYTHON_BIN}" -u main.py \
-    --config "${CONFIG_PATH}" \
-    "$@" \
-    --run-dir "${RUN_DIR}" \
-    --scan-only
-
-echo "[3/3] Creating histograms and plots"
-"${PYTHON_BIN}" -u main.py \
-    --config "${CONFIG_PATH}" \
-    "$@" \
-    --run-dir "${RUN_DIR}" \
-    --tasks histogram_creation
-
-echo "Ariel pipeline completed: ${RUN_DIR}"
+    --tasks parsing,mass_calculating,post_processing,histogram_creation

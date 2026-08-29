@@ -29,6 +29,9 @@ class PipelineState(Enum):
     
     # Post-processing phase
     POST_PROCESSING = auto()
+
+    # Determine consistent histogram bin ranges from all processed shards
+    GLOBAL_RANGE_SCAN = auto()
     
     # Histogram creation phase
     HISTOGRAM_CREATION = auto()
@@ -53,6 +56,7 @@ VALID_TRANSITIONS = {
         PipelineState.PARSING,
         PipelineState.MASS_CALCULATION,
         PipelineState.POST_PROCESSING,
+        PipelineState.GLOBAL_RANGE_SCAN,
         PipelineState.HISTOGRAM_CREATION,
         PipelineState.FAILED,
     },
@@ -65,17 +69,25 @@ VALID_TRANSITIONS = {
     PipelineState.PARSING: {
         PipelineState.MASS_CALCULATION,
         PipelineState.POST_PROCESSING,
+        PipelineState.GLOBAL_RANGE_SCAN,
         PipelineState.HISTOGRAM_CREATION,
         PipelineState.COMPLETED,
         PipelineState.FAILED,
     },
     PipelineState.MASS_CALCULATION: {
         PipelineState.POST_PROCESSING,
+        PipelineState.GLOBAL_RANGE_SCAN,
         PipelineState.HISTOGRAM_CREATION,
         PipelineState.COMPLETED,
         PipelineState.FAILED,
     },
     PipelineState.POST_PROCESSING: {
+        PipelineState.GLOBAL_RANGE_SCAN,
+        PipelineState.HISTOGRAM_CREATION,
+        PipelineState.COMPLETED,
+        PipelineState.FAILED,
+    },
+    PipelineState.GLOBAL_RANGE_SCAN: {
         PipelineState.HISTOGRAM_CREATION,
         PipelineState.COMPLETED,
         PipelineState.FAILED,

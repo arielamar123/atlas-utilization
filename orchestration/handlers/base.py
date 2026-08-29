@@ -43,7 +43,8 @@ class StateHandler(ABC):
         """
         Determine next state based on configuration.
         
-        Default implementation: follow task order (parsing -> mass -> post -> histogram)
+        Default implementation: follow task order
+        (parsing -> mass -> post -> global-range scan -> histogram).
         
         Args:
             context: Current pipeline context
@@ -53,6 +54,26 @@ class StateHandler(ABC):
         """
         tasks = context.config.tasks
         current = context.current_state
+
+        def histogram_prerequisite() -> PipelineState:
+            """Return the next histogram state without redundant scans.
+
+            BumpNet-named SQLite histograms need a global range pass. Single-job
+            runs perform it automatically. Batch histogram jobs retain the
+            existing contract: one shared ``--scan-only`` job runs before the
+            histogram array jobs, so each batch must not repeat the scan.
+            """
+            hc = context.config.histogram_creation_config
+            needs_global_scan = bool(
+                hc
+                and hc.use_bumpnet_naming
+                and context.config.batch_job_index is None
+            )
+            return (
+                PipelineState.GLOBAL_RANGE_SCAN
+                if needs_global_scan
+                else PipelineState.HISTOGRAM_CREATION
+            )
         
         # State transitions based on enabled tasks
         if current == PipelineState.FETCHING_METADATA:
@@ -63,7 +84,7 @@ class StateHandler(ABC):
             elif tasks.do_post_processing:
                 return PipelineState.POST_PROCESSING
             elif tasks.do_histogram_creation:
-                return PipelineState.HISTOGRAM_CREATION
+                return histogram_prerequisite()
             else:
                 return PipelineState.COMPLETED
         
@@ -73,7 +94,7 @@ class StateHandler(ABC):
             elif tasks.do_post_processing:
                 return PipelineState.POST_PROCESSING
             elif tasks.do_histogram_creation:
-                return PipelineState.HISTOGRAM_CREATION
+                return histogram_prerequisite()
             else:
                 return PipelineState.COMPLETED
         
@@ -81,15 +102,20 @@ class StateHandler(ABC):
             if tasks.do_post_processing:
                 return PipelineState.POST_PROCESSING
             elif tasks.do_histogram_creation:
-                return PipelineState.HISTOGRAM_CREATION
+                return histogram_prerequisite()
             else:
                 return PipelineState.COMPLETED
         
         elif current == PipelineState.POST_PROCESSING:
             if tasks.do_histogram_creation:
-                return PipelineState.HISTOGRAM_CREATION
+                return histogram_prerequisite()
             else:
                 return PipelineState.COMPLETED
+
+        elif current == PipelineState.GLOBAL_RANGE_SCAN:
+            if tasks.do_histogram_creation:
+                return PipelineState.HISTOGRAM_CREATION
+            return PipelineState.COMPLETED
         
         elif current == PipelineState.HISTOGRAM_CREATION:
             return PipelineState.COMPLETED

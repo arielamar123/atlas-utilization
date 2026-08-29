@@ -39,6 +39,7 @@ class StateMachine:
             PipelineState.PARSING,
             PipelineState.MASS_CALCULATION,
             PipelineState.POST_PROCESSING,
+            PipelineState.GLOBAL_RANGE_SCAN,
             PipelineState.HISTOGRAM_CREATION,
         }
         

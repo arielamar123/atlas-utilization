@@ -189,13 +189,18 @@ def _create_histograms_from_sqlite(
     output_dir = histograms_config["output_dir"]
     os.makedirs(output_dir, exist_ok=True)
 
-    # Load global ranges if available
-    global_ranges_path = histograms_config.get("global_ranges_path")
-    global_ranges = load_global_ranges(global_ranges_path) if global_ranges_path else None
-
     bin_width_gev = histograms_config["bin_width_gev"]
     bin_widths_gev = [bin_width_gev] if isinstance(bin_width_gev, (int, float)) else bin_width_gev
     use_bumpnet_naming = histograms_config.get("use_bumpnet_naming", False)
+    # Global ranges are a prerequisite only for BumpNet grouping. Standard
+    # histograms determine their own per-signature range and should not run an
+    # unnecessary global scan or require a ranges file.
+    global_ranges_path = histograms_config.get("global_ranges_path")
+    global_ranges = (
+        load_global_ranges(global_ranges_path)
+        if use_bumpnet_naming and global_ranges_path
+        else None
+    )
     exclude_outliers = histograms_config.get("exclude_outliers", False)
     single_output_file = histograms_config.get("single_output_file", False)
     output_filename = histograms_config.get("output_filename", "all_histograms.root")

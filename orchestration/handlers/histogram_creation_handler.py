@@ -28,6 +28,14 @@ class HistogramCreationHandler(StateHandler):
             self.logger.warning("No histogram_creation_config – skipping")
             return context, self._determine_next_state(context)
 
+        if hc.use_bumpnet_naming:
+            if not hc.global_ranges_path or not Path(hc.global_ranges_path).is_file():
+                raise RuntimeError(
+                    "BumpNet histogram creation requires global_ranges.json. "
+                    "Single-job pipelines create it automatically immediately before this state; "
+                    "batch workflows must run the shared --scan-only job first."
+                )
+
         start = datetime.now()
 
         config_dict = {

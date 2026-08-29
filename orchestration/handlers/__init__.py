@@ -9,6 +9,7 @@ from .fetch_metadata_handler import FetchMetadataHandler
 from .parsing_handler import ParsingHandler
 from .mass_calculation_handler import MassCalculationHandler
 from .post_processing_handler import PostProcessingHandler
+from .global_range_scan_handler import GlobalRangeScanHandler
 from .histogram_creation_handler import HistogramCreationHandler
 
 __all__ = [
@@ -17,5 +18,6 @@ __all__ = [
     "ParsingHandler",
     "MassCalculationHandler",
     "PostProcessingHandler",
+    "GlobalRangeScanHandler",
     "HistogramCreationHandler",
 ]
