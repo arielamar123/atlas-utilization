@@ -23,6 +23,7 @@ from domain.statistics import ParsingStatistics
 from domain.events import EventBatch
 from services.parsing.event_selection import (
     apply_parsing_event_selection,
+    canonical_particle_field_name,
     normalize_particle_collections,
 )
 from utils.batching import get_batch_slice_by_year
@@ -48,6 +49,23 @@ def select_metadata_for_parsing(metadata, release_years, parse_mc):
         for key, value in metadata.items()
         if key.startswith("record_") or key.endswith("_mc") == parse_mc
     }
+
+
+def objects_required_for_parsing(
+    objects_to_calculate,
+    particle_counts=None,
+    kinematic_cuts=None,
+):
+    """Include selection-only objects in input reads, but not persisted output."""
+    required = list(objects_to_calculate)
+    seen = set(required)
+    for selection in (particle_counts or {}, kinematic_cuts or {}):
+        for key in selection:
+            canonical = canonical_particle_field_name(key)
+            if canonical not in seen:
+                required.append(canonical)
+                seen.add(canonical)
+    return tuple(required)
 
 
 class ParsingHandler(StateHandler):
@@ -137,6 +155,11 @@ class ParsingHandler(StateHandler):
                 "mass_calculation_task_config.objects_to_calculate is required "
                 "when parsing is enabled"
             )
+        objects_to_parse = objects_required_for_parsing(
+            mass_config.objects_to_calculate,
+            parsing_config.particle_counts,
+            parsing_config.kinematic_cuts,
+        )
         
         start_time = datetime.now()
         stats_collector = ParsingStatisticsCollector()
@@ -197,6 +220,7 @@ class ParsingHandler(StateHandler):
                 batch_size=40_000,
                 enable_jet_tagging=parsing_config.enable_jet_tagging,
                 jet_btagging_thresholds=parsing_config.jet_btagging_thresholds,
+                objects_to_parse=objects_to_parse,
                 on_success=on_success,
                 on_error=on_error
             ):

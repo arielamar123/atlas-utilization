@@ -26,6 +26,10 @@ BASE_OBJECTS = {
     "Taus": ["pt", "eta", "phi", "mass"]
 }
 
+# Their invariant masses use exact known constants downstream, so optional
+# source mass branches need not be transferred or persisted.
+FIXED_MASS_OBJECTS = frozenset({"Electrons", "Muons", "Photons"})
+
 # Objects required for b-tagging in PHYSLITE files; they store the btagging
 # data in a separate container, linked to by the AnalysisJets objects.
 PHYSLITE_BTAGGING_OBJECTS = [

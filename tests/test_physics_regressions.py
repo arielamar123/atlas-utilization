@@ -27,7 +27,10 @@ from services.storage.sqlite_shards import (
     prune_final_states_below_min_events,
 )
 from services.pipelines.im_pipeline import _apply_ossf_dilepton_cut
-from orchestration.handlers.parsing_handler import select_metadata_for_parsing
+from orchestration.handlers.parsing_handler import (
+    objects_required_for_parsing,
+    select_metadata_for_parsing,
+)
 from orchestration.handlers.mass_calculation_handler import MassCalculationHandler
 from services.metadata.fetcher import MetadataFetcher
 from domain.events import EventBatch
@@ -53,6 +56,55 @@ def _particles(counts, *, charge=1):
 
 
 class ConfigDrivenParticleCollectionTests(unittest.TestCase):
+    def test_selection_only_objects_are_read_but_not_added_to_output_schema(self):
+        required = objects_required_for_parsing(
+            ("Electrons", "Jets"),
+            particle_counts={"taus": {"min": 0, "max": 0}},
+            kinematic_cuts={"muons": {"pt_min": 25_000.0}},
+        )
+
+        self.assertEqual(required, ("Electrons", "Jets", "Taus", "Muons"))
+
+    def test_requested_objects_prune_unneeded_remote_branches(self):
+        branches = {
+            "Electrons": {
+                "electron.pt": "pt",
+                "electron.mass": "mass",
+                "electron.charge": "charge",
+            },
+            "Jets": {"jet.pt": "pt", "jet.mass": "mass"},
+            "Taus": {"tau.pt": "pt", "tau.mass": "mass"},
+            "DirectObjects": {"tag.pb": "tag.pb"},
+        }
+
+        restricted = FileParser._restrict_branches_to_requested_objects(
+            branches,
+            ("Electrons", "Jets", "BJets"),
+            enable_jet_tagging=True,
+        )
+
+        self.assertEqual(set(restricted), {"Electrons", "Jets", "DirectObjects"})
+        self.assertEqual(
+            restricted["Electrons"],
+            {"electron.pt": "pt", "electron.charge": "charge"},
+        )
+        self.assertEqual(restricted["Jets"], branches["Jets"])
+
+    def test_tagger_branches_are_skipped_when_no_jets_are_requested(self):
+        branches = {
+            "Electrons": {"electron.pt": "pt"},
+            "Jets": {"jet.pt": "pt"},
+            "DirectObjects": {"tag.pb": "tag.pb"},
+        }
+
+        restricted = FileParser._restrict_branches_to_requested_objects(
+            branches,
+            ("Electrons",),
+            enable_jet_tagging=True,
+        )
+
+        self.assertEqual(restricted, {"Electrons": {"electron.pt": "pt"}})
+
     def test_atlas_muons_do_not_require_an_optional_mass_branch(self):
         muons = ak.Array([[
             {"pt": 50_000.0, "eta": 0.0, "phi": 0.0, "charge": -1},

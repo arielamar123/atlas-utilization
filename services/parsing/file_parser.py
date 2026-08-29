@@ -10,7 +10,7 @@ import awkward as ak
 import numpy as np
 import uproot
 import itertools
-from typing import Optional
+from typing import Iterable, Optional
 
 from services.parsing import schemas
 from services import consts
@@ -32,6 +32,7 @@ class FileParser:
         enable_jet_tagging: bool = False,
         jet_btagging_thresholds: Optional[dict[str, float]] = None,
         read_timeout_sec: float = 300.0,
+        objects_to_parse: Optional[Iterable[str]] = None,
     ) -> Optional[ak.Array]:
         """
         Parse a single ROOT file and return events.
@@ -58,6 +59,7 @@ class FileParser:
                     file_path,
                     enable_jet_tagging,
                     jet_btagging_thresholds,
+                    objects_to_parse,
                 )
         except Exception as e:
             raise RuntimeError(f"Failed to parse file {file_path}") from e
@@ -70,7 +72,8 @@ class FileParser:
         batch_size: int,
         file_path: str,
         enable_jet_tagging: bool,
-        jet_btagging_thresholds: Optional[dict[str, float]]
+        jet_btagging_thresholds: Optional[dict[str, float]],
+        objects_to_parse: Optional[Iterable[str]] = None,
     ) -> Optional[ak.Array]:
         """Parse an already-opened ROOT file."""
         tree_name = FileParser._get_data_tree_name(root_file.keys(), tree_names)
@@ -81,6 +84,12 @@ class FileParser:
         obj_branches = FileParser._extract_branches_by_schema(
             all_tree_branches,
             release_year
+        )
+
+        obj_branches = FileParser._restrict_branches_to_requested_objects(
+            obj_branches,
+            objects_to_parse,
+            enable_jet_tagging,
         )
 
         # Auxiliary tagger branches are large and are irrelevant when tagging
@@ -107,11 +116,57 @@ class FileParser:
             batch_size
         )
         obj_events = FileParser._split_combined_leptons(obj_events, release_year)
-        if enable_jet_tagging:
+        should_calculate_jet_tags = (
+            enable_jet_tagging
+            and "Jets" in obj_events
+            and "DirectObjects" in obj_events
+        )
+        if should_calculate_jet_tags:
             obj_events = FileParser._calculate_btagging_and_split(obj_events, jet_btagging_thresholds)
         # Strip out DirectObjects -- they are not physics objects!
         obj_events.pop("DirectObjects", None)
+        if objects_to_parse is not None:
+            requested = set(objects_to_parse)
+            obj_events = {
+                name: values
+                for name, values in obj_events.items()
+                if name in requested
+            }
         return ak.zip(obj_events, depth_limit=1)
+
+    @staticmethod
+    def _restrict_branches_to_requested_objects(
+        obj_branches: dict[str, dict[str, str]],
+        objects_to_parse: Optional[Iterable[str]],
+        enable_jet_tagging: bool,
+    ) -> dict[str, dict[str, str]]:
+        """Prune remote branches before any accessibility test or full read."""
+        if objects_to_parse is None:
+            return obj_branches
+
+        requested = set(objects_to_parse)
+        source_objects = requested - {"BJets"}
+        needs_jet_classification = bool(
+            enable_jet_tagging and requested.intersection({"Jets", "BJets"})
+        )
+        if "BJets" in requested:
+            source_objects.add("Jets")
+        if needs_jet_classification:
+            source_objects.add("DirectObjects")
+
+        restricted = {}
+        for object_name, branch_mapping in obj_branches.items():
+            if object_name not in source_objects:
+                continue
+            restricted[object_name] = {
+                branch: quantity
+                for branch, quantity in branch_mapping.items()
+                if not (
+                    quantity == "mass"
+                    and object_name in schemas.FIXED_MASS_OBJECTS
+                )
+            }
+        return restricted
 
     @staticmethod
     def _split_combined_leptons(

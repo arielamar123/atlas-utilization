@@ -7,7 +7,7 @@ Single responsibility: Manage thread pool for parsing multiple files concurrentl
 import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from typing import Iterator, Optional, Callable
+from typing import Callable, Iterable, Iterator, Optional
 from tqdm import tqdm
 
 from domain.events import EventBatch
@@ -63,6 +63,7 @@ class ThreadedFileProcessor:
         batch_size: int = 40_000,
         enable_jet_tagging: bool = False,
         jet_btagging_thresholds: Optional[dict[str, float]] = None,
+        objects_to_parse: Optional[Iterable[str]] = None,
         on_success: Optional[Callable[[str, int, float], None]] = None,
         on_error: Optional[Callable[[str, Exception], None]] = None
     ) -> Iterator[EventBatch]:
@@ -99,6 +100,7 @@ class ThreadedFileProcessor:
                     batch_size,
                     enable_jet_tagging,
                     jet_btagging_thresholds,
+                    objects_to_parse,
                 )
             futures[future] = (file_url, time.monotonic())
             return True
@@ -182,6 +184,7 @@ class ThreadedFileProcessor:
         batch_size: int,
         enable_jet_tagging: bool,
         jet_btagging_thresholds: Optional[dict[str, float]],
+        objects_to_parse: Optional[Iterable[str]],
     ) -> tuple:
         """
         Parse a single file (runs in thread).
@@ -207,6 +210,7 @@ class ThreadedFileProcessor:
             enable_jet_tagging=enable_jet_tagging,
             jet_btagging_thresholds=jet_btagging_thresholds,
             read_timeout_sec=self.file_read_timeout_sec,
+            objects_to_parse=objects_to_parse,
         )
         
         processing_time = time.time() - start_time
