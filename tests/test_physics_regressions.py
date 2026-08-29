@@ -5,6 +5,7 @@ import math
 import os
 import tempfile
 import threading
+import time
 import warnings
 from unittest import mock
 
@@ -246,6 +247,31 @@ class RootBatchIntegrityTests(unittest.TestCase):
 
 
 class ParsingFailureAccountingTests(unittest.TestCase):
+    def test_long_file_emits_active_worker_heartbeat(self):
+        class SlowParser:
+            def parse_file(self, *args, **kwargs):
+                time.sleep(0.04)
+                return ak.zip({"Jets": _particles([1])}, depth_limit=1)
+
+        processor = ThreadedFileProcessor(
+            SlowParser(),
+            1,
+            show_progress=False,
+            file_read_timeout_sec=1,
+            status_interval_sec=0.01,
+        )
+
+        with self.assertLogs(level="INFO") as captured:
+            batches = list(processor.process_files(
+                ["large.root"], ["events"], "2024r-pp"
+            ))
+
+        self.assertEqual(len(batches), 1)
+        self.assertTrue(any(
+            "Still parsing 1 active file(s): large.root" in line
+            for line in captured.output
+        ))
+
     def test_file_read_timeout_is_forwarded_to_uproot(self):
         parsed = ak.zip({"Jets": _particles([1])}, depth_limit=1)
         fake_file = mock.MagicMock()

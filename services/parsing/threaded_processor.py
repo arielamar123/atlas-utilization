@@ -5,6 +5,7 @@ Single responsibility: Manage thread pool for parsing multiple files concurrentl
 """
 
 import logging
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Iterator, Optional, Callable
 from tqdm import tqdm
@@ -27,6 +28,7 @@ class ThreadedFileProcessor:
         max_threads: int,
         show_progress: bool = True,
         file_read_timeout_sec: float = 300.0,
+        status_interval_sec: float = 15.0,
     ):
         """
         Initialize threaded processor.
@@ -42,11 +44,16 @@ class ThreadedFileProcessor:
             raise ValueError(
                 f"file_read_timeout_sec must be positive, got {file_read_timeout_sec}"
             )
+        if status_interval_sec <= 0:
+            raise ValueError(
+                f"status_interval_sec must be positive, got {status_interval_sec}"
+            )
         
         self.file_parser = file_parser
         self.max_threads = max_threads
         self.show_progress = show_progress
         self.file_read_timeout_sec = file_read_timeout_sec
+        self.status_interval_sec = status_interval_sec
     
     def process_files(
         self,
@@ -93,7 +100,7 @@ class ThreadedFileProcessor:
                     enable_jet_tagging,
                     jet_btagging_thresholds,
                 )
-            futures[future] = file_url
+            futures[future] = (file_url, time.monotonic())
             return True
 
         for _ in range(min(self.max_threads, total_files)):
@@ -104,9 +111,38 @@ class ThreadedFileProcessor:
         try:
             with progress_bar as pbar:
                 while futures:
-                    done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                    done, _ = wait(
+                        futures,
+                        timeout=self.status_interval_sec,
+                        return_when=FIRST_COMPLETED,
+                    )
+                    if not done:
+                        now = time.monotonic()
+                        active = [
+                            (url.rsplit("/", 1)[-1], now - started_at)
+                            for url, started_at in futures.values()
+                        ]
+                        longest = max(elapsed for _, elapsed in active)
+                        detail = ", ".join(
+                            f"{name} ({elapsed:.0f}s)"
+                            for name, elapsed in active
+                        )
+                        logging.info(
+                            "Still parsing %d active file(s): %s",
+                            len(active),
+                            detail,
+                        )
+                        if self.show_progress:
+                            pbar.set_postfix_str(
+                                f"active={len(active)}, longest={longest:.0f}s",
+                                refresh=True,
+                            )
+                        continue
+
                     for future in done:
-                        file_url = futures.pop(future)
+                        file_url, _ = futures.pop(future)
+                        if self.show_progress:
+                            pbar.set_postfix_str("", refresh=False)
                         try:
                             events, processing_time = future.result()
                             batch = self._create_event_batch(
@@ -161,6 +197,7 @@ class ThreadedFileProcessor:
         """
         import time
         start_time = time.time()
+        logging.info("Started parsing file: %s", file_url)
         
         events = self.file_parser.parse_file(
             file_path=file_url,
@@ -176,6 +213,13 @@ class ThreadedFileProcessor:
         
         if events is None:
             raise RuntimeError("Parser returned no event data")
+
+        logging.info(
+            "Finished parsing file in %.1fs (%d events): %s",
+            processing_time,
+            len(events),
+            file_url,
+        )
         
         return (events, processing_time)
     
