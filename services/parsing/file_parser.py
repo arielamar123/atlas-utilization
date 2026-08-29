@@ -172,7 +172,20 @@ class FileParser:
             pu = obj_events["DirectObjects"]["BTagging_AntiKt4EMPFlowAuxDyn.DL1dv01_pu"][indices]
             # DL1d score: log(pb / (fc*pc + (1-fc)*pu)), fc=0.018 is standard ATLAS.
             fc = 0.018
-            dl1d = np.log(pb / (fc * pc + (1 - fc) * pu))
+            denominator = fc * pc + (1 - fc) * pu
+            valid_ratio = (pb > 0) & (denominator > 0)
+            # Avoid evaluating either division by zero or log(0). A positive
+            # b probability with zero background probability has +inf score;
+            # zero b probability is untagged with -inf score.
+            safe_pb = ak.where(valid_ratio, pb, 1.0)
+            safe_denominator = ak.where(valid_ratio, denominator, 1.0)
+            dl1d = np.log(safe_pb / safe_denominator)
+            dl1d = ak.where(
+                (pb > 0) & (denominator <= 0),
+                np.inf,
+                dl1d,
+            )
+            dl1d = ak.where(pb <= 0, -np.inf, dl1d)
             is_bjet = dl1d > jet_btagging_thresholds["DL1d"]
         else:
             raise ValueError(

@@ -5,6 +5,7 @@ import math
 import os
 import tempfile
 import threading
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -400,6 +401,25 @@ class MissingCollectionSelectionTests(unittest.TestCase):
 
 
 class BTaggingValidationTests(unittest.TestCase):
+    def test_zero_dl1d_denominator_has_defined_tagging_without_warning(self):
+        jets = _particles([3])
+        direct = ak.Array([{
+            "AnalysisJetsAuxDyn.btaggingLink/AnalysisJetsAuxDyn.btaggingLink.m_persIndex": [0, 1, 2],
+            "BTagging_AntiKt4EMPFlowAuxDyn.DL1dv01_pb": [0.8, 0.0, 0.2],
+            "BTagging_AntiKt4EMPFlowAuxDyn.DL1dv01_pc": [0.0, 0.0, 0.0],
+            "BTagging_AntiKt4EMPFlowAuxDyn.DL1dv01_pu": [0.0, 0.0, 0.0],
+        }])
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            split = FileParser._calculate_btagging_and_split(
+                {"Jets": jets, "DirectObjects": direct},
+                {"DL1d": 2.51},
+            )
+
+        self.assertEqual(ak.to_list(ak.num(split["BJets"])), [2])
+        self.assertEqual(ak.to_list(ak.num(split["Jets"])), [1])
+
     def test_cms_threshold_key_matches_configuration(self):
         jets = _particles([2])
         direct = ak.Array([{
