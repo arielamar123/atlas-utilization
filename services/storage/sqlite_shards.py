@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import zlib
+from contextlib import closing
 from typing import Dict, Iterator, List, Optional
 
 import numpy as np
@@ -94,7 +95,7 @@ def list_signatures(db_path: str, table_name: str = "array_chunks") -> List[str]
     """Return all distinct signatures in a shard DB."""
     if not os.path.exists(db_path):
         return []
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute(
             f"SELECT DISTINCT signature FROM {table_name} ORDER BY signature"
         ).fetchall()
@@ -109,7 +110,7 @@ def iter_arrays_for_signature(
     """Yield all chunks for one signature."""
     if not os.path.exists(db_path):
         return
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute(
             f"SELECT payload FROM {table_name} WHERE signature = ?",
             (signature,),
@@ -124,7 +125,7 @@ def iter_all_chunks(
     """Yield (signature, chunk_array) for every row."""
     if not os.path.exists(db_path):
         return
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         rows = conn.execute(
             f"SELECT signature, payload FROM {table_name} ORDER BY id"
         ).fetchall()
@@ -136,7 +137,7 @@ def get_total_entries(db_path: str, table_name: str = "array_chunks") -> int:
     """Return total entry count from metadata column."""
     if not os.path.exists(db_path):
         return 0
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         row = conn.execute(f"SELECT COALESCE(SUM(n_entries), 0) FROM {table_name}").fetchone()
     return int(row[0] if row else 0)
 
@@ -163,7 +164,7 @@ def prune_final_states_below_min_events(
     explicit_populations: dict[str, int] = {}
     signatures_by_db_and_fs: dict[tuple[str, str], list[str]] = {}
     for path in db_paths:
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn:
             rows = conn.execute(
                 f"""
                 SELECT signature, COALESCE(SUM(n_entries), 0)
@@ -206,7 +207,7 @@ def prune_final_states_below_min_events(
 
     removed = [fs for fs, count in populations.items() if count < min_events]
     for path in db_paths:
-        with sqlite3.connect(path) as conn:
+        with closing(sqlite3.connect(path)) as conn:
             signatures = []
             for final_state in removed:
                 signatures.extend(signatures_by_db_and_fs.get((path, final_state), []))
