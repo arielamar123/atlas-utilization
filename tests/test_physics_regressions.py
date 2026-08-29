@@ -421,5 +421,39 @@ class MassOnlyZConfigurationTests(unittest.TestCase):
         self.assertEqual(config.post_processing_config.z_peak_cutoff, 115.0)
 
 
+class BatchedTreeReconstructionTests(unittest.TestCase):
+    def test_parsed_particle_branches_are_read_in_one_call(self):
+        class FakeTree:
+            def __init__(self):
+                self.calls = 0
+
+            def keys(self):
+                return [
+                    "nElectrons",
+                    "Electrons_pt",
+                    "Electrons_eta",
+                    "Electrons_phi",
+                    "Electrons_charge",
+                ]
+
+            def arrays(self, branches, library):
+                self.calls += 1
+                return ak.Array({
+                    "Electrons_pt": [[30.0]],
+                    "Electrons_eta": [[0.1]],
+                    "Electrons_phi": [[0.2]],
+                    "Electrons_charge": [[-1]],
+                })
+
+            def __getitem__(self, branch):
+                raise AssertionError("per-branch reads must not be used")
+
+        tree = FakeTree()
+        events = MassCalculationHandler._reconstruct_particle_arrays(tree)
+
+        self.assertEqual(tree.calls, 1)
+        self.assertEqual(ak.to_list(events.Electrons.charge), [[-1]])
+
+
 if __name__ == "__main__":
     unittest.main()

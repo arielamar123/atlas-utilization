@@ -190,6 +190,12 @@ class MassCalculationHandler(StateHandler):
                 particle_types.append(ptype)
 
         particle_dict = {}
+        data_branches = [
+            branch
+            for branch in branch_names
+            if any(branch.startswith(f"{ptype}_") for ptype in particle_types)
+        ]
+        arrays = tree.arrays(data_branches, library="ak") if data_branches else None
         for ptype in particle_types:
             sub_branches = {}
             for bn in branch_names:
@@ -197,7 +203,7 @@ class MassCalculationHandler(StateHandler):
                 prefix = f"{ptype}_"
                 if bn.startswith(prefix):
                     field_name = bn[len(prefix):]        # "pt", "eta", …
-                    sub_branches[field_name] = tree[bn].array(library="ak")
+                    sub_branches[field_name] = arrays[bn]
 
             if sub_branches:
                 particle_dict[ptype] = ak.zip(sub_branches)
@@ -221,12 +227,21 @@ class MassCalculationHandler(StateHandler):
         Branch naming: Analysis{Type}sAuxDyn.{field} (e.g. AnalysisElectronsAuxDyn.pt)
         """
         particle_dict = {}
+        selected_branches = []
+        branches_by_type = {}
         for ptype, prefix in cls.ATLAS_BRANCH_MAP.items():
-            sub_branches = {}
+            branches_by_type[ptype] = {}
             for field in ("pt", "eta", "phi"):
                 branch_name = f"{prefix}.{field}"
                 if branch_name in tree:
-                    sub_branches[field] = tree[branch_name].array(library="ak")
+                    branches_by_type[ptype][field] = branch_name
+                    selected_branches.append(branch_name)
+        arrays = tree.arrays(selected_branches, library="ak") if selected_branches else None
+        for ptype, field_mapping in branches_by_type.items():
+            sub_branches = {
+                field: arrays[branch_name]
+                for field, branch_name in field_mapping.items()
+            }
             if sub_branches:
                 particle_dict[ptype] = ak.zip(sub_branches)
 
