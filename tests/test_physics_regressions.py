@@ -321,5 +321,22 @@ class ReleaseAccumulationTests(unittest.TestCase):
         self.assertEqual(remaining.file_ids, (2,))
 
 
+class CombinedLeptonSchemaTests(unittest.TestCase):
+    def test_legacy_leptons_are_split_by_pdg_type(self):
+        leptons = ak.Array([[
+            {"pt": 30.0, "eta": 0.0, "phi": 0.0, "type": 11},
+            {"pt": 40.0, "eta": 0.0, "phi": 1.0, "type": -13},
+        ]])
+
+        split = FileParser._split_combined_leptons(
+            {"Electrons": leptons, "Muons": leptons}, "2016e-8tev"
+        )
+
+        self.assertEqual(ak.to_list(ak.num(split["Electrons"])), [1])
+        self.assertEqual(ak.to_list(ak.num(split["Muons"])), [1])
+        self.assertEqual(ak.to_list(split["Electrons"]["type"]), [[11]])
+        self.assertEqual(ak.to_list(split["Muons"]["type"]), [[-13]])
+
+
 if __name__ == "__main__":
     unittest.main()

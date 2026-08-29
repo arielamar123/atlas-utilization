@@ -133,8 +133,8 @@ RELEASE_SCHEMAS = {
             # Note: Photons not detected in this release
         },
         "objects": {
-            "Electrons": ["pt", "eta", "phi"],  # No mass field detected
-            "Muons": ["pt", "eta", "phi"],      # No mass field detected
+            "Electrons": ["pt", "eta", "phi", "type", "charge"],
+            "Muons": ["pt", "eta", "phi", "type", "charge"],
             "Jets": ["pt", "eta", "phi", "mass"]
         }
     },
@@ -153,8 +153,8 @@ RELEASE_SCHEMAS = {
             # Note: tau_pt exists but represents tau jets, not regular jets
         },
         "objects": {
-            "Electrons": ["pt", "eta", "phi"],  # No mass field detected
-            "Muons": ["pt", "eta", "phi"],      # No mass field detected
+            "Electrons": ["pt", "eta", "phi", "type", "charge"],
+            "Muons": ["pt", "eta", "phi", "type", "charge"],
             "Jets": ["pt", "eta", "phi"],       # No mass field detected
             "Photons": ["pt", "eta", "phi"],
             "Taus": ["pt", "eta", "phi"]
