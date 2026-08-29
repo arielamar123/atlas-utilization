@@ -70,11 +70,19 @@ class IMCalculator:
             t = ak.to_numpy(getattr(particle_counts, "Taus", zero_array))
             b = ak.to_numpy(getattr(particle_counts, "BJets", zero_array))
 
-            all_events_fs = [
-                f"{e}e_{m}m_{j}j_{g}g_{t}t_{b}b"
-                for e, m, j, g, t, b in zip(e, m, j, g, t, b)
-                if self._is_valid_fs([e, m, j, g, t, b])
-            ]
+            # Keep one label per input event so the label array remains aligned
+            # with ``self.events``.  Invalid states use an empty sentinel and are
+            # excluded from grouping below; dropping them here would shift every
+            # subsequent boolean mask onto the wrong event.
+            all_events_fs = []
+            for counts in zip(e, m, j, g, t, b):
+                if self._is_valid_fs(counts):
+                    ce, cm, cj, cg, ct, cb = counts
+                    all_events_fs.append(
+                        f"{ce}e_{cm}m_{cj}j_{cg}g_{ct}t_{cb}b"
+                    )
+                else:
+                    all_events_fs.append("")
             self._all_events_fs = ak.Array(all_events_fs)
         return self._all_events_fs
 
@@ -94,7 +102,7 @@ class IMCalculator:
         fs_by_count = Counter(all_events_fs_list)
         fs_by_count_sorted = [
             (fs, count) for fs, count in fs_by_count.most_common()
-            if count >= self.min_events_per_fs
+            if fs and count >= self.min_events_per_fs
         ]
 
         for fs, _count in fs_by_count_sorted:
