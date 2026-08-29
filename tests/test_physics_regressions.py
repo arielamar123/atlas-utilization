@@ -10,6 +10,7 @@ import numpy as np
 
 from services.calculations.im_calculator import IMCalculator
 from services.calculations.physics_calcs import (
+    calc_inv_mass,
     filter_events_by_kinematics,
     filter_events_by_particle_counts,
     find_actual_field_name,
@@ -99,6 +100,17 @@ class InvariantMassUnitTests(unittest.TestCase):
         mass = ak.to_list(calculator.calculate_invariant_mass(events))[0]
 
         self.assertAlmostEqual(mass, 100.0002205, places=5)
+
+    def test_legacy_calculator_uses_one_consistent_unit(self):
+        jets = ak.Array([[
+            {"pt": 100_000.0, "eta": 0.0, "phi": 0.0, "mass": 10_000.0},
+            {"pt": 100_000.0, "eta": 0.0, "phi": math.pi, "mass": 10_000.0},
+        ]])
+        events = ak.zip({"Jets": jets}, depth_limit=1)
+
+        mass = ak.to_list(calc_inv_mass(events))[0]
+
+        self.assertAlmostEqual(mass, 200.997512, places=5)
 
 
 class RootBatchIntegrityTests(unittest.TestCase):

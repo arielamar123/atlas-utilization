@@ -15,11 +15,14 @@ from services.calculations import consts
 from services.calculations.combinatorics import get_count, get_start
 
 
-def calc_inv_mass(particle_events: ak.Array) -> ak.Array:
+def calc_inv_mass(
+    particle_events: ak.Array,
+    momentum_scale_to_gev: float = 1e-3,
+) -> ak.Array:
     if len(particle_events) == 0:
         return ak.Array([])
 
-    all_vectors = concat_events(particle_events)
+    all_vectors = concat_events(particle_events, momentum_scale_to_gev)
     combined_vectors = ak.concatenate(all_vectors, axis=1)
     total_momentum = ak.sum(combined_vectors, axis=1)
 
@@ -28,13 +31,18 @@ def calc_inv_mass(particle_events: ak.Array) -> ak.Array:
     return total_momentum.mass
 
 
-def concat_events(particle_events: ak.Array) -> list:
+def concat_events(
+    particle_events: ak.Array,
+    momentum_scale_to_gev: float = 1e-3,
+) -> list:
     all_vectors = []
     for particle_type in particle_events.fields:
         particle_array = particle_events[particle_type]
-        mass = get_particle_known_mass(particle_type, particle_array)
+        mass = get_particle_known_mass(
+            particle_type, particle_array, momentum_scale_to_gev
+        )
         momentum_vector = vector.zip({
-            "pt": particle_array.pt,
+            "pt": particle_array.pt * momentum_scale_to_gev,
             "phi": particle_array.phi,
             "eta": particle_array.eta,
             "mass": mass
