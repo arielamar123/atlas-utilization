@@ -128,7 +128,7 @@ class ThreadedFileProcessor:
         batch_size: int,
         enable_jet_tagging: bool,
         jet_btagging_thresholds: Optional[dict[str, float]],
-    ) -> Optional[tuple]:
+    ) -> tuple:
         """
         Parse a single file (runs in thread).
         
@@ -139,7 +139,7 @@ class ThreadedFileProcessor:
             batch_size: Batch size for reading
             
         Returns:
-            Tuple of (events, processing_time) or None if parsing failed
+            Tuple of (events, processing_time)
         """
         import time
         start_time = time.time()
@@ -156,7 +156,7 @@ class ThreadedFileProcessor:
         processing_time = time.time() - start_time
         
         if events is None:
-            return None
+            raise RuntimeError("Parser returned no event data")
         
         return (events, processing_time)
     

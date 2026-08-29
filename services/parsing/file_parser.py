@@ -56,8 +56,7 @@ class FileParser:
                     jet_btagging_thresholds,
                 )
         except Exception as e:
-            logging.warning(f"Failed to open file {file_path}: {e}")
-            return None
+            raise RuntimeError(f"Failed to parse file {file_path}") from e
     
     @staticmethod
     def _parse_opened_file(

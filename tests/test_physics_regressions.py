@@ -5,6 +5,7 @@ import math
 
 from services.calculations.im_calculator import IMCalculator
 from services.parsing.file_parser import FileParser
+from services.parsing.threaded_processor import ThreadedFileProcessor
 
 
 def _particles(counts, *, charge=1):
@@ -102,6 +103,27 @@ class RootBatchIntegrityTests(unittest.TestCase):
             FileParser._read_file_in_batches(
                 FakeTree(), set(mapping["Electrons"]), mapping, 4, 2
             )
+
+
+class ParsingFailureAccountingTests(unittest.TestCase):
+    def test_parser_none_result_invokes_error_callback(self):
+        class NullParser:
+            def parse_file(self, *args, **kwargs):
+                return None
+
+        failures = []
+        processor = ThreadedFileProcessor(NullParser(), 1, show_progress=False)
+
+        batches = list(processor.process_files(
+            ["bad.root"],
+            ["events"],
+            "2024r-pp",
+            on_error=lambda url, error: failures.append((url, error)),
+        ))
+
+        self.assertEqual(batches, [])
+        self.assertEqual(len(failures), 1)
+        self.assertEqual(failures[0][0], "bad.root")
 
 
 if __name__ == "__main__":
