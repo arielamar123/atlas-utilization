@@ -151,10 +151,22 @@ def filter_events_by_particle_counts(
     for obj, value in particle_counts.items():
         actual_field = find_actual_field_name(events.fields, obj)
         if not actual_field:
+            required_min = (
+                value['min'] if is_particle_counts_range
+                else get_start(value) + get_count(value)
+            )
+            if required_min > 0:
+                combined_mask = combined_mask & False
             continue
 
         obj_array = events[actual_field]
         if ak.all(ak.is_none(obj_array)):
+            required_min = (
+                value['min'] if is_particle_counts_range
+                else get_start(value) + get_count(value)
+            )
+            if required_min > 0:
+                combined_mask = combined_mask & False
             continue
 
         obj_count = ak.num(obj_array)
@@ -288,15 +300,21 @@ def filter_events_by_kinematics(
             filtered_events[obj] = particles
             continue
 
-        if "pt" in cuts and hasattr(particles, "pt"):
+        if "pt" in cuts and not hasattr(particles, "pt"):
+            raise ValueError(f"{obj} is missing configured kinematic field 'pt'")
+        if "pt" in cuts:
             pt_vals = ak.values_astype(particles.pt, float)
             mask = mask & (pt_vals >= cuts["pt"]["min"])
 
-        if "eta" in cuts and hasattr(particles, "eta"):
+        if "eta" in cuts and not hasattr(particles, "eta"):
+            raise ValueError(f"{obj} is missing configured kinematic field 'eta'")
+        if "eta" in cuts:
             eta_vals = ak.values_astype(particles.eta, float)
             mask = mask & (eta_vals >= cuts["eta"]["min"]) & (eta_vals <= cuts["eta"]["max"])
 
-        if "phi" in cuts and hasattr(particles, "phi"):
+        if "phi" in cuts and not hasattr(particles, "phi"):
+            raise ValueError(f"{obj} is missing configured kinematic field 'phi'")
+        if "phi" in cuts:
             phi_vals = ak.values_astype(particles.phi, float)
             mask = mask & (phi_vals >= cuts["phi"]["min"]) & (phi_vals <= cuts["phi"]["max"])
 
@@ -309,10 +327,8 @@ def filter_events_by_kinematics(
                 rel = iso_vals / ak.where(pt_vals > 0, pt_vals, np.inf)
                 mask = mask & (rel < float(cuts["rel_isolation_max"]))
             else:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Electron rel_isolation_max requested but field %r not present; skipping isolation cut",
-                    iso_name,
+                raise ValueError(
+                    f"Electron rel_isolation_max requires missing field {iso_name!r}"
                 )
 
         # Boolean mask (not ak.mask) so dropped particles do not appear in lists
@@ -322,7 +338,10 @@ def filter_events_by_kinematics(
 
 
 def find_actual_field_name(fields: list, obj_name: str) -> Optional[str]:
+    if obj_name in fields:
+        return obj_name
+    target = obj_name.casefold()
     for field in fields:
-        if obj_name in field:
+        if field.casefold() == target:
             return field
     return None

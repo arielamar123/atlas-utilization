@@ -8,6 +8,11 @@ import tempfile
 import numpy as np
 
 from services.calculations.im_calculator import IMCalculator
+from services.calculations.physics_calcs import (
+    filter_events_by_kinematics,
+    filter_events_by_particle_counts,
+    find_actual_field_name,
+)
 from services.parsing.file_parser import FileParser
 from services.parsing.threaded_processor import ThreadedFileProcessor
 from services.storage.sqlite_shards import (
@@ -160,6 +165,30 @@ class GlobalFinalStateThresholdTests(unittest.TestCase):
             self.assertEqual(removed, ["_FS_0e_2m_0j_0g_0t_0b"])
             self.assertEqual(len(signatures), 2)
             self.assertTrue(all("_FS_2e_" in sig for sig in signatures))
+
+
+class MissingCollectionSelectionTests(unittest.TestCase):
+    def test_missing_required_collection_rejects_event(self):
+        events = ak.zip({"BJets": _particles([1])}, depth_limit=1)
+
+        selected = filter_events_by_particle_counts(
+            events,
+            {"Electrons": {"min": 1, "max": 4}},
+            is_particle_counts_range=True,
+        )
+
+        self.assertEqual(len(selected), 0)
+
+    def test_jets_does_not_alias_bjets(self):
+        self.assertIsNone(find_actual_field_name(["BJets"], "Jets"))
+
+    def test_requested_isolation_must_exist(self):
+        events = ak.zip({"Electrons": _particles([1])}, depth_limit=1)
+        with self.assertRaisesRegex(ValueError, "requires missing field"):
+            filter_events_by_kinematics(
+                events,
+                {"Electrons": {"rel_isolation_max": 0.06}},
+            )
 
 
 if __name__ == "__main__":
