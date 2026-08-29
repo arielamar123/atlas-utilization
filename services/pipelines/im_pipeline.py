@@ -154,10 +154,43 @@ def _calculate_combination_invariant_mass(
         return None, 'no_events_after_slice'
 
     inv_mass = calculator.calculate_invariant_mass(sliced_events)
+    inv_mass = _apply_ossf_dilepton_cut(
+        sliced_events,
+        combination,
+        inv_mass,
+        float(config.get("z_peak_cutoff", 0.0)),
+    )
     if not ak.any(inv_mass):
         return None, 'empty_inv_mass'
 
     return inv_mass, None
+
+
+def _apply_ossf_dilepton_cut(
+    sliced_events: ak.Array,
+    combination: Dict,
+    inv_mass: ak.Array,
+    cutoff_gev: float,
+) -> ak.Array:
+    """Apply the low-mass cut only to a selected opposite-sign SF pair.
+
+    A multibody invariant mass that merely contains a dilepton pair is not a
+    dilepton Z observable and is left untouched. Same-sign pairs are also kept.
+    """
+    if cutoff_gev <= 0 or len(combination) != 1:
+        return inv_mass
+
+    particle_type, value = next(iter(combination.items()))
+    if particle_type not in {"Electrons", "Muons"} or get_count(value) != 2:
+        return inv_mass
+
+    particles = sliced_events[particle_type]
+    if "charge" not in particles.fields:
+        raise ValueError(
+            f"Cannot apply OSSF low-mass cut: {particle_type} charge is missing"
+        )
+    opposite_sign = particles.charge[:, 0] * particles.charge[:, 1] < 0
+    return inv_mass[(~opposite_sign) | (inv_mass >= cutoff_gev)]
 
 
 def _accumulate_invariant_mass(

@@ -17,9 +17,10 @@ BASE_OBJECTS = {
         "eta",
         "phi",
         "mass",
+        "charge",
         "ptvarcone30_Nonprompt_All_MaxWeightTTVALooseCone_pt1000",
     ],
-    "Muons": ["pt", "eta", "phi", "mass"],
+    "Muons": ["pt", "eta", "phi", "mass", "charge"],
     "Jets": ["pt", "eta", "phi", "mass"],
     "Photons": ["pt", "eta", "phi"],  # Photons typically don't have mass
     "Taus": ["pt", "eta", "phi", "mass"]
@@ -84,8 +85,8 @@ RELEASE_SCHEMAS = {
             "Taus": "Tau"             # Maps to Tau_pt, Tau_eta, etc.
         },
         "objects": {
-            "Electrons": ["pt", "eta", "phi", "mass"],
-            "Muons": ["pt", "eta", "phi", "mass"],
+            "Electrons": ["pt", "eta", "phi", "mass", "charge"],
+            "Muons": ["pt", "eta", "phi", "mass", "charge"],
             "Jets": ["pt", "eta", "phi", "mass"],
             "Photons": ["pt", "eta", "phi", "mass"],  # NanoAOD includes Photon_mass
             "Taus": ["pt", "eta", "phi", "mass", "charge", "decayMode", "idDeepTau2017v2p1VSjet"]

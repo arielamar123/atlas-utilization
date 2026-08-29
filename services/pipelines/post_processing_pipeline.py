@@ -41,32 +41,19 @@ def _dilepton_flavor(signature: str) -> bool:
 
     particles = _IM_PARTICLE_PATTERN.findall(match.group(1))
     letters = [letter for letter, _rank in particles]
-    return any(letters.count(flavor) >= 2 for flavor in _DILEPTON_LETTERS)
+    return len(letters) == 2 and len(set(letters)) == 1 and letters[0] in _DILEPTON_LETTERS
 
 
 def _apply_z_peak_cut(
     arr: np.ndarray, signature: str, z_peak_cutoff: float, logger: logging.Logger
 ) -> np.ndarray:
     """
-    Drop masses below ``z_peak_cutoff`` GeV for channels containing same-flavour dileptons.
+    Compatibility no-op: charge-aware filtering now happens before storage.
 
     The array is returned untouched for every other
     channel and when the cut is disabled (cutoff <= 0).
     """
-    if z_peak_cutoff <= 0:
-        return arr
-
-    if not _dilepton_flavor(signature):
-        return arr
-
-    kept = arr[arr >= z_peak_cutoff]
-    removed = len(arr) - len(kept)
-    if removed:
-        logger.debug(
-            f"{signature}: Z-peak cut removed {removed} dilepton values "
-            f"below {z_peak_cutoff:.1f} GeV"
-        )
-    return kept
+    return arr
 
 
 def process_im_arrays(config: Dict, file_list: Optional[List[str]] = None) -> List[str]:

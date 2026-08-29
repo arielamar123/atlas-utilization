@@ -75,6 +75,11 @@ class MassCalculationHandler(StateHandler):
             "fs_chunk_threshold_bytes": mc.fs_chunk_threshold_bytes,
             "output_mode": "sqlite",
             "sqlite_writer": sqlite_writer,
+            "z_peak_cutoff": (
+                context.config.post_processing_config.z_peak_cutoff
+                if context.config.post_processing_config is not None
+                else 0.0
+            ),
         }
 
         # ── Discover parsed ROOT files ──

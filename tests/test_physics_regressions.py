@@ -20,6 +20,7 @@ from services.storage.sqlite_shards import (
     list_signatures,
     prune_final_states_below_min_events,
 )
+from services.pipelines.im_pipeline import _apply_ossf_dilepton_cut
 
 
 def _particles(counts, *, charge=1):
@@ -211,6 +212,51 @@ class BTaggingValidationTests(unittest.TestCase):
             FileParser._calculate_btagging_and_split(
                 {"Jets": _particles([1])}, {"DL1d": 2.51}
             )
+
+
+class OSSFZCutTests(unittest.TestCase):
+    def test_cut_uses_charge_and_preserves_same_sign_pair(self):
+        electrons = ak.Array([
+            [
+                {"pt": 60.0, "eta": 0.0, "phi": 0.0, "charge": 1},
+                {"pt": 60.0, "eta": 0.0, "phi": 3.14, "charge": -1},
+            ],
+            [
+                {"pt": 60.0, "eta": 0.0, "phi": 0.0, "charge": 1},
+                {"pt": 60.0, "eta": 0.0, "phi": 3.14, "charge": 1},
+            ],
+            [
+                {"pt": 70.0, "eta": 0.0, "phi": 0.0, "charge": 1},
+                {"pt": 70.0, "eta": 0.0, "phi": 3.14, "charge": -1},
+            ],
+        ])
+        events = ak.zip({"Electrons": electrons}, depth_limit=1)
+
+        kept = _apply_ossf_dilepton_cut(
+            events,
+            {"Electrons": (2, 0)},
+            ak.Array([100.0, 100.0, 120.0]),
+            115.0,
+        )
+
+        self.assertEqual(ak.to_list(kept), [100.0, 120.0])
+
+    def test_multibody_mass_is_not_treated_as_dilepton_mass(self):
+        events = ak.zip({
+            "Electrons": ak.Array([[
+                {"charge": 1}, {"charge": -1},
+            ]]),
+            "Jets": ak.Array([[{}]]),
+        }, depth_limit=1)
+
+        kept = _apply_ossf_dilepton_cut(
+            events,
+            {"Electrons": (2, 0), "Jets": (1, 0)},
+            ak.Array([100.0]),
+            115.0,
+        )
+
+        self.assertEqual(ak.to_list(kept), [100.0])
 
 
 if __name__ == "__main__":
