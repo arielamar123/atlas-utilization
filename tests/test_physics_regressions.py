@@ -33,5 +33,20 @@ class FinalStateAlignmentTests(unittest.TestCase):
         self.assertEqual(ak.to_list(ak.num(selected.Electrons)), [1])
 
 
+class CombinationSelectionTests(unittest.TestCase):
+    def test_two_lepton_combination_is_kept_in_three_lepton_state(self):
+        events = ak.zip({"Electrons": _particles([3])}, depth_limit=1)
+        calculator = IMCalculator(events, 1, 1, 4, 1, 4)
+        combination = {"Electrons": (2, 0)}
+
+        selected = calculator.filter_by_particle_counts(
+            events, combination, is_exact_count=True
+        )
+        sliced = calculator.slice_by_field(selected, combination)
+
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(ak.to_list(ak.num(sliced.Electrons)), [2])
+
+
 if __name__ == "__main__":
     unittest.main()

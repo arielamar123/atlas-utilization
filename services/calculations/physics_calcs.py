@@ -159,12 +159,11 @@ def filter_events_by_particle_counts(
         elif is_exact_count:
             count = get_count(value)
             start = get_start(value)
-            if start == 0:
-                # leading only: exact count as before
-                particle_mask = (obj_count == count)
-            else:
-                # sub-leading: need at least start + count particles
-                particle_mask = (obj_count >= start + count)
+            # A combination selects a window of objects from an already exact
+            # final state; it must not require that the final state contain no
+            # additional objects of this type.  ``is_exact_count`` only means
+            # that non-combination fields are removed below.
+            particle_mask = (obj_count >= start + count)
         else:
             count = get_count(value)
             start = get_start(value)
