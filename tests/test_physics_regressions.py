@@ -364,7 +364,7 @@ class CombinedLeptonSchemaTests(unittest.TestCase):
         ]])
 
         split = FileParser._split_combined_leptons(
-            {"Electrons": leptons, "Muons": leptons}, "2016e-8tev"
+            {"Electrons": leptons, "Muons": leptons}, "2016e-8tev_mc"
         )
 
         self.assertEqual(ak.to_list(ak.num(split["Electrons"])), [1])

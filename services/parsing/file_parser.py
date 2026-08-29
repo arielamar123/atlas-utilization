@@ -114,14 +114,15 @@ class FileParser:
         obj_events: dict[str, ak.Array], release_year: str
     ) -> dict[str, ak.Array]:
         """Split legacy ``lep_*`` branches using their absolute PDG type."""
-        if release_year not in {"2016e-8tev", "2025e-13tev-beta"}:
+        normalized_release = schemas.normalize_release_year(release_year)
+        if normalized_release not in {"2016e-8tev", "2025e-13tev-beta"}:
             return obj_events
         source = obj_events.get("Electrons")
         if source is None:
             source = obj_events.get("Muons")
         if source is None or "type" not in source.fields:
             raise ValueError(
-                f"{release_year} combined lepton branches require lep_type"
+                f"{normalized_release} combined lepton branches require lep_type"
             )
         abs_type = abs(source["type"])
         obj_events["Electrons"] = source[abs_type == 11]
