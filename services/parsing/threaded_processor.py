@@ -5,7 +5,7 @@ Single responsibility: Manage thread pool for parsing multiple files concurrentl
 """
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Iterator, Optional, Callable
 from tqdm import tqdm
 
@@ -25,7 +25,8 @@ class ThreadedFileProcessor:
         self,
         file_parser: FileParser,
         max_threads: int,
-        show_progress: bool = True
+        show_progress: bool = True,
+        file_read_timeout_sec: float = 300.0,
     ):
         """
         Initialize threaded processor.
@@ -37,10 +38,15 @@ class ThreadedFileProcessor:
         """
         if max_threads <= 0:
             raise ValueError(f"max_threads must be positive, got {max_threads}")
+        if file_read_timeout_sec <= 0:
+            raise ValueError(
+                f"file_read_timeout_sec must be positive, got {file_read_timeout_sec}"
+            )
         
         self.file_parser = file_parser
         self.max_threads = max_threads
         self.show_progress = show_progress
+        self.file_read_timeout_sec = file_read_timeout_sec
     
     def process_files(
         self,
@@ -69,10 +75,16 @@ class ThreadedFileProcessor:
         """
         total_files = len(file_urls)
         
-        with ThreadPoolExecutor(max_workers=self.max_threads) as executor:
-            # Submit all parse jobs
-            futures = {
-                executor.submit(
+        executor = ThreadPoolExecutor(max_workers=self.max_threads)
+        file_iterator = iter(file_urls)
+        futures = {}
+
+        def submit_next() -> bool:
+            try:
+                file_url = next(file_iterator)
+            except StopIteration:
+                return False
+            future = executor.submit(
                     self._parse_single_file,
                     file_url,
                     tree_names,
@@ -80,45 +92,51 @@ class ThreadedFileProcessor:
                     batch_size,
                     enable_jet_tagging,
                     jet_btagging_thresholds,
-                ): file_url
-                for file_url in file_urls
-            }
-            
-            # Process results as they complete
-            progress_bar = self._create_progress_bar(total_files)
-            
+                )
+            futures[future] = file_url
+            return True
+
+        for _ in range(min(self.max_threads, total_files)):
+            submit_next()
+
+        completed_normally = False
+        progress_bar = self._create_progress_bar(total_files)
+        try:
             with progress_bar as pbar:
-                for future in as_completed(futures):
-                    file_url = futures[future]
-                    
-                    try:
-                        result = future.result(timeout=300)  # 5 minute timeout per file
-                        
-                        if result is not None:
-                            events, processing_time = result
-                            
-                            # Create EventBatch
+                while futures:
+                    done, _ = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        file_url = futures.pop(future)
+                        try:
+                            events, processing_time = future.result()
                             batch = self._create_event_batch(
                                 events=events,
                                 file_url=file_url,
                                 release_year=release_year,
-                                processing_time=processing_time
+                                processing_time=processing_time,
                             )
-                            
-                            # Callback
                             if on_success:
                                 on_success(file_url, batch.event_count, processing_time)
-                            
                             yield batch
-                    
-                    except Exception as e:
-                        logging.warning(f"Error processing file {file_url}: {e}")
-                        if on_error:
-                            on_error(file_url, e)
-                    
-                    finally:
-                        if self.show_progress:
-                            pbar.update(1)
+                        except Exception as e:
+                            logging.warning(f"Error processing file {file_url}: {e}")
+                            if on_error:
+                                on_error(file_url, e)
+                        finally:
+                            if self.show_progress:
+                                pbar.update(1)
+                        submit_next()
+            completed_normally = True
+        finally:
+            if not completed_normally:
+                for future in futures:
+                    future.cancel()
+            # Never hide a downstream exception behind waits for unrelated
+            # files. Running XRootD calls are bounded by read_timeout_sec.
+            executor.shutdown(
+                wait=completed_normally,
+                cancel_futures=not completed_normally,
+            )
     
     def _parse_single_file(
         self,
@@ -151,6 +169,7 @@ class ThreadedFileProcessor:
             batch_size=batch_size,
             enable_jet_tagging=enable_jet_tagging,
             jet_btagging_thresholds=jet_btagging_thresholds,
+            read_timeout_sec=self.file_read_timeout_sec,
         )
         
         processing_time = time.time() - start_time

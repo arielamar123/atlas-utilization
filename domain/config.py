@@ -51,6 +51,7 @@ class ParsingConfig:
     show_progress_bar: bool = True
     count_retries_failed_files: int = 3
     fetching_metadata_timeout: int = 60
+    file_read_timeout_sec: float = 300.0
     
     # Data selection
     possible_data_tree_names: tuple[str, ...] = ("CollectionTree",)
@@ -72,6 +73,10 @@ class ParsingConfig:
             raise ValueError(f"env_threshold_memory_mb must be positive, got {self.env_threshold_memory_mb}")
         if self.count_retries_failed_files < 0:
             raise ValueError(f"count_retries_failed_files must be non-negative, got {self.count_retries_failed_files}")
+        if self.file_read_timeout_sec <= 0:
+            raise ValueError(
+                f"file_read_timeout_sec must be positive, got {self.file_read_timeout_sec}"
+            )
         if not self.output_path:
             raise ValueError("output_path cannot be empty")
         if not self.file_urls_path:
@@ -302,6 +307,7 @@ class PipelineConfig:
                 show_progress_bar=parsing_dict.get("show_progress_bar", True),
                 count_retries_failed_files=parsing_dict.get("count_retries_failed_files", 3),
                 fetching_metadata_timeout=parsing_dict.get("fetching_metadata_timeout", 60),
+                file_read_timeout_sec=parsing_dict.get("file_read_timeout_sec", 300.0),
                 possible_data_tree_names=tuple(parsing_dict.get("possible_data_tree_names", ["CollectionTree"])),
                 max_files_to_process=parsing_dict.get("max_files_to_process"),
                 enable_jet_tagging=parsing_dict.get("enable_jet_tagging", False),

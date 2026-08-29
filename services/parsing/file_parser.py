@@ -31,6 +31,7 @@ class FileParser:
         batch_size: int = 40_000,
         enable_jet_tagging: bool = False,
         jet_btagging_thresholds: Optional[dict[str, float]] = None,
+        read_timeout_sec: float = 300.0,
     ) -> Optional[ak.Array]:
         """
         Parse a single ROOT file and return events.
@@ -45,7 +46,10 @@ class FileParser:
             Awkward array of events with particle objects, or None if parsing failed
         """
         try:
-            with uproot.open(file_path) as root_file:
+            # The timeout is retained by uproot's XRootD source and applies to
+            # open and chunk-read requests, preventing an unavailable remote
+            # file from occupying a parsing worker forever.
+            with uproot.open(file_path, timeout=read_timeout_sec) as root_file:
                 return FileParser._parse_opened_file(
                     root_file,
                     tree_names,

@@ -4,6 +4,7 @@ import awkward as ak
 import math
 import os
 import tempfile
+import threading
 from unittest import mock
 
 import numpy as np
@@ -244,6 +245,68 @@ class RootBatchIntegrityTests(unittest.TestCase):
 
 
 class ParsingFailureAccountingTests(unittest.TestCase):
+    def test_file_read_timeout_is_forwarded_to_uproot(self):
+        parsed = ak.zip({"Jets": _particles([1])}, depth_limit=1)
+        fake_file = mock.MagicMock()
+        fake_context = mock.MagicMock()
+        fake_context.__enter__.return_value = fake_file
+
+        with mock.patch("services.parsing.file_parser.uproot.open", return_value=fake_context) as opened:
+            with mock.patch.object(FileParser, "_parse_opened_file", return_value=parsed):
+                result = FileParser.parse_file(
+                    "remote.root",
+                    ["events"],
+                    "2024r-pp",
+                    read_timeout_sec=7.5,
+                )
+
+        self.assertIs(result, parsed)
+        opened.assert_called_once_with("remote.root", timeout=7.5)
+
+    def test_closing_generator_does_not_submit_the_whole_file_list(self):
+        release_worker = threading.Event()
+        started = []
+
+        class ControlledParser:
+            def parse_file(self, file_path, *args, **kwargs):
+                started.append(file_path)
+                if file_path != "first.root":
+                    release_worker.wait(timeout=2)
+                return ak.zip({"Jets": _particles([1])}, depth_limit=1)
+
+        processor = ThreadedFileProcessor(
+            ControlledParser(), 2, show_progress=False, file_read_timeout_sec=1
+        )
+        batches = processor.process_files(
+            ["first.root", "second.root", "third.root", "fourth.root"],
+            ["events"],
+            "2024r-pp",
+        )
+
+        next(batches)
+        batches.close()
+        release_worker.set()
+
+        self.assertLessEqual(len(started), 2)
+
+    def test_configured_read_timeout_reaches_threaded_parser(self):
+        class RecordingParser:
+            def __init__(self):
+                self.kwargs = None
+
+            def parse_file(self, *args, **kwargs):
+                self.kwargs = kwargs
+                return ak.zip({"Jets": _particles([1])}, depth_limit=1)
+
+        parser = RecordingParser()
+        processor = ThreadedFileProcessor(
+            parser, 1, show_progress=False, file_read_timeout_sec=12.0
+        )
+
+        list(processor.process_files(["one.root"], ["events"], "2024r-pp"))
+
+        self.assertEqual(parser.kwargs["read_timeout_sec"], 12.0)
+
     def test_parser_none_result_invokes_error_callback(self):
         class NullParser:
             def parse_file(self, *args, **kwargs):

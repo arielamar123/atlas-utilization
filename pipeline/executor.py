@@ -821,7 +821,8 @@ class PipelineExecutor:
             services['threaded_processor'] = ThreadedFileProcessor(
                 file_parser=services['file_parser'],
                 max_threads=pc.threads,
-                show_progress=pc.show_progress_bar
+                show_progress=pc.show_progress_bar,
+                file_read_timeout_sec=pc.file_read_timeout_sec,
             )
         
         return services
