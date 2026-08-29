@@ -26,6 +26,7 @@ from orchestration.handlers.parsing_handler import select_metadata_for_parsing
 from orchestration.handlers.mass_calculation_handler import MassCalculationHandler
 from services.metadata.fetcher import MetadataFetcher
 from domain.events import EventBatch
+from domain.config import PipelineConfig
 from services.parsing.event_accumulator import EventAccumulator
 
 
@@ -382,6 +383,25 @@ class MassFailurePropagationTests(unittest.TestCase):
             MassCalculationHandler._raise_mass_failures([
                 ("parsed_bad.root", ValueError("broken event layout"))
             ])
+
+
+class MassOnlyZConfigurationTests(unittest.TestCase):
+    def test_mass_only_batch_retains_z_cutoff_configuration(self):
+        config = PipelineConfig.from_dict({
+            "tasks": {"do_mass_calculating": True},
+            "mass_calculation_task_config": {
+                "input_dir": "parsed",
+                "output_dir": "im",
+            },
+            "post_processing_task_config": {
+                "input_dir": "im",
+                "output_dir": "processed",
+                "z_peak_cutoff": 115.0,
+            },
+        })
+
+        self.assertIsNotNone(config.post_processing_config)
+        self.assertEqual(config.post_processing_config.z_peak_cutoff, 115.0)
 
 
 if __name__ == "__main__":

@@ -341,7 +341,10 @@ class PipelineConfig:
         
         # Parse post-processing config if enabled
         post_processing_config = None
-        if tasks.do_post_processing:
+        # Mass calculation applies the charge-aware OSSF cutoff while the
+        # selected particles are still available, so mass-only batch jobs also
+        # need the post-processing cutoff configuration.
+        if tasks.do_post_processing or tasks.do_mass_calculating:
             post_dict = config_dict.get("post_processing_task_config", {})
             post_processing_config = PostProcessingConfig(
                 input_dir=post_dict["input_dir"],
