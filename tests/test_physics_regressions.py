@@ -172,6 +172,22 @@ class GlobalFinalStateThresholdTests(unittest.TestCase):
             self.assertEqual(len(signatures), 2)
             self.assertTrue(all("_FS_2e_" in sig for sig in signatures))
 
+    def test_counts_are_aggregated_across_batch_shards(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = [os.path.join(tmpdir, f"im_batch_{i}.sqlite") for i in (1, 2)]
+            for index, path in enumerate(paths, start=1):
+                writer = SqliteArrayShardWriter(path)
+                writer.append_array(
+                    f"parsed_batch{index}_FS_2e_0m_0j_0g_0t_0b_IM_e0e1",
+                    np.arange(6),
+                )
+                writer.close()
+
+            removed = prune_final_states_below_min_events(paths, 10)
+
+            self.assertEqual(removed, [])
+            self.assertTrue(all(len(list_signatures(path)) == 1 for path in paths))
+
 
 class MissingCollectionSelectionTests(unittest.TestCase):
     def test_missing_required_collection_rejects_event(self):
