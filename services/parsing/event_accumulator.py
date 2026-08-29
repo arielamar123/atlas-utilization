@@ -51,6 +51,12 @@ class EventAccumulator:
         if self._current_release_year is None:
             self._current_release_year = batch.release_year
         
+        release_changed = (
+            self._current_release_year is not None
+            and batch.release_year != self._current_release_year
+            and len(self._current_batches) > 0
+        )
+
         # Check if adding this batch would exceed threshold
         would_exceed = (
             self._current_size_bytes + batch.size_bytes > self._threshold_bytes
@@ -59,7 +65,7 @@ class EventAccumulator:
         
         chunk_to_return = None
         
-        if would_exceed:
+        if release_changed or would_exceed:
             # Create chunk from current accumulation
             chunk_to_return = self._create_chunk()
             # Reset for next accumulation

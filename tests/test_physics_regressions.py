@@ -24,6 +24,8 @@ from services.storage.sqlite_shards import (
 from services.pipelines.im_pipeline import _apply_ossf_dilepton_cut
 from orchestration.handlers.parsing_handler import select_metadata_for_parsing
 from services.metadata.fetcher import MetadataFetcher
+from domain.events import EventBatch
+from services.parsing.event_accumulator import EventAccumulator
 
 
 def _particles(counts, *, charge=1):
@@ -300,6 +302,23 @@ class MetadataCompletenessTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "before release .* was complete"):
                 fetcher._fetch_urls_for_releases(["2024r-pp"])
+
+
+class ReleaseAccumulationTests(unittest.TestCase):
+    def test_release_change_flushes_existing_batches(self):
+        accumulator = EventAccumulator(1_000_000)
+        events = ak.zip({"Electrons": _particles([1])}, depth_limit=1)
+        first = EventBatch(events, 1, "release_a", 100, 1, 0.1)
+        second = EventBatch(events, 2, "release_b", 100, 1, 0.1)
+
+        self.assertIsNone(accumulator.add_batch(first))
+        flushed = accumulator.add_batch(second)
+        remaining = accumulator.flush()
+
+        self.assertEqual(flushed.release_year, "release_a")
+        self.assertEqual(flushed.file_ids, (1,))
+        self.assertEqual(remaining.release_year, "release_b")
+        self.assertEqual(remaining.file_ids, (2,))
 
 
 if __name__ == "__main__":
