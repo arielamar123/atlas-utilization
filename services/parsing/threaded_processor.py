@@ -5,6 +5,7 @@ Single responsibility: Manage thread pool for parsing multiple files concurrentl
 """
 
 import logging
+import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Callable, Iterable, Iterator, Optional
@@ -29,6 +30,8 @@ class ThreadedFileProcessor:
         show_progress: bool = True,
         file_read_timeout_sec: float = 300.0,
         status_interval_sec: float = 15.0,
+        remote_read_concurrency: int = 1,
+        remote_serial_read_min_entries: int = 100_000,
     ):
         """
         Initialize threaded processor.
@@ -48,12 +51,26 @@ class ThreadedFileProcessor:
             raise ValueError(
                 f"status_interval_sec must be positive, got {status_interval_sec}"
             )
+        if remote_read_concurrency <= 0:
+            raise ValueError(
+                "remote_read_concurrency must be positive, got "
+                f"{remote_read_concurrency}"
+            )
+        if remote_serial_read_min_entries < 0:
+            raise ValueError(
+                "remote_serial_read_min_entries must be non-negative, got "
+                f"{remote_serial_read_min_entries}"
+            )
         
         self.file_parser = file_parser
         self.max_threads = max_threads
         self.show_progress = show_progress
         self.file_read_timeout_sec = file_read_timeout_sec
         self.status_interval_sec = status_interval_sec
+        self.remote_read_semaphore = threading.BoundedSemaphore(
+            remote_read_concurrency
+        )
+        self.remote_serial_read_min_entries = remote_serial_read_min_entries
     
     def process_files(
         self,
@@ -211,6 +228,8 @@ class ThreadedFileProcessor:
             jet_btagging_thresholds=jet_btagging_thresholds,
             read_timeout_sec=self.file_read_timeout_sec,
             objects_to_parse=objects_to_parse,
+            remote_read_semaphore=self.remote_read_semaphore,
+            remote_serial_read_min_entries=self.remote_serial_read_min_entries,
         )
         
         processing_time = time.time() - start_time

@@ -823,6 +823,8 @@ class PipelineExecutor:
                 max_threads=pc.threads,
                 show_progress=pc.show_progress_bar,
                 file_read_timeout_sec=pc.file_read_timeout_sec,
+                remote_read_concurrency=pc.remote_read_concurrency,
+                remote_serial_read_min_entries=pc.remote_serial_read_min_entries,
             )
         
         return services

@@ -52,6 +52,8 @@ class ParsingConfig:
     count_retries_failed_files: int = 3
     fetching_metadata_timeout: int = 60
     file_read_timeout_sec: float = 300.0
+    remote_read_concurrency: int = 1
+    remote_serial_read_min_entries: int = 100_000
     
     # Data selection
     possible_data_tree_names: tuple[str, ...] = ("CollectionTree",)
@@ -76,6 +78,16 @@ class ParsingConfig:
         if self.file_read_timeout_sec <= 0:
             raise ValueError(
                 f"file_read_timeout_sec must be positive, got {self.file_read_timeout_sec}"
+            )
+        if self.remote_read_concurrency <= 0:
+            raise ValueError(
+                "remote_read_concurrency must be positive, got "
+                f"{self.remote_read_concurrency}"
+            )
+        if self.remote_serial_read_min_entries < 0:
+            raise ValueError(
+                "remote_serial_read_min_entries must be non-negative, got "
+                f"{self.remote_serial_read_min_entries}"
             )
         if not self.output_path:
             raise ValueError("output_path cannot be empty")
@@ -308,6 +320,10 @@ class PipelineConfig:
                 count_retries_failed_files=parsing_dict.get("count_retries_failed_files", 3),
                 fetching_metadata_timeout=parsing_dict.get("fetching_metadata_timeout", 60),
                 file_read_timeout_sec=parsing_dict.get("file_read_timeout_sec", 300.0),
+                remote_read_concurrency=parsing_dict.get("remote_read_concurrency", 1),
+                remote_serial_read_min_entries=parsing_dict.get(
+                    "remote_serial_read_min_entries", 100_000
+                ),
                 possible_data_tree_names=tuple(parsing_dict.get("possible_data_tree_names", ["CollectionTree"])),
                 max_files_to_process=parsing_dict.get("max_files_to_process"),
                 enable_jet_tagging=parsing_dict.get("enable_jet_tagging", False),

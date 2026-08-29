@@ -204,6 +204,11 @@ class ConfigDrivenParticleCollectionTests(unittest.TestCase):
             parsed.mass_calculation_config.objects_to_calculate,
             ("Muons", "Jets"),
         )
+        self.assertEqual(parsed.parsing_config.remote_read_concurrency, 1)
+        self.assertEqual(
+            parsed.parsing_config.remote_serial_read_min_entries,
+            100_000,
+        )
 
 
 class FinalStateAlignmentTests(unittest.TestCase):
@@ -330,6 +335,51 @@ class RootBatchIntegrityTests(unittest.TestCase):
 
 
 class ParsingFailureAccountingTests(unittest.TestCase):
+    def test_only_large_remote_files_use_the_shared_read_lane(self):
+        self.assertFalse(FileParser._should_limit_remote_read(
+            "root://server/small.root", 99_999, 100_000
+        ))
+        self.assertTrue(FileParser._should_limit_remote_read(
+            "root://server/large.root", 100_000, 100_000
+        ))
+        self.assertFalse(FileParser._should_limit_remote_read(
+            "/data/large.root", 1_000_000, 100_000
+        ))
+
+    def test_remote_payload_concurrency_is_bounded(self):
+        lock = threading.Lock()
+        active = 0
+        maximum_active = 0
+
+        class LimitedParser:
+            def parse_file(self, *args, remote_read_semaphore, **kwargs):
+                nonlocal active, maximum_active
+                with remote_read_semaphore:
+                    with lock:
+                        active += 1
+                        maximum_active = max(maximum_active, active)
+                    time.sleep(0.02)
+                    with lock:
+                        active -= 1
+                return ak.zip({"Jets": _particles([1])}, depth_limit=1)
+
+        processor = ThreadedFileProcessor(
+            LimitedParser(),
+            4,
+            show_progress=False,
+            file_read_timeout_sec=1,
+            remote_read_concurrency=1,
+        )
+
+        batches = list(processor.process_files(
+            [f"remote-{index}.root" for index in range(4)],
+            ["events"],
+            "2024r-pp",
+        ))
+
+        self.assertEqual(len(batches), 4)
+        self.assertEqual(maximum_active, 1)
+
     def test_long_file_emits_active_worker_heartbeat(self):
         class SlowParser:
             def parse_file(self, *args, **kwargs):

@@ -10,6 +10,7 @@ import awkward as ak
 import numpy as np
 import uproot
 import itertools
+from contextlib import nullcontext
 from typing import Iterable, Optional
 
 from services.parsing import schemas
@@ -33,6 +34,8 @@ class FileParser:
         jet_btagging_thresholds: Optional[dict[str, float]] = None,
         read_timeout_sec: float = 300.0,
         objects_to_parse: Optional[Iterable[str]] = None,
+        remote_read_semaphore=None,
+        remote_serial_read_min_entries: int = 100_000,
     ) -> Optional[ak.Array]:
         """
         Parse a single ROOT file and return events.
@@ -60,6 +63,8 @@ class FileParser:
                     enable_jet_tagging,
                     jet_btagging_thresholds,
                     objects_to_parse,
+                    remote_read_semaphore,
+                    remote_serial_read_min_entries,
                 )
         except Exception as e:
             raise RuntimeError(f"Failed to parse file {file_path}") from e
@@ -74,6 +79,8 @@ class FileParser:
         enable_jet_tagging: bool,
         jet_btagging_thresholds: Optional[dict[str, float]],
         objects_to_parse: Optional[Iterable[str]] = None,
+        remote_read_semaphore=None,
+        remote_serial_read_min_entries: int = 100_000,
     ) -> Optional[ak.Array]:
         """Parse an already-opened ROOT file."""
         tree_name = FileParser._get_data_tree_name(root_file.keys(), tree_names)
@@ -108,13 +115,24 @@ class FileParser:
             return None
         
         all_branches = set(itertools.chain.from_iterable(obj_branches.values()))
-        obj_events = FileParser._read_file_in_batches(
-            tree,
-            all_branches,
-            obj_branches,
+        is_large_remote_read = FileParser._should_limit_remote_read(
+            file_path,
             n_entries,
-            batch_size
+            remote_serial_read_min_entries,
         )
+        read_guard = (
+            remote_read_semaphore
+            if is_large_remote_read and remote_read_semaphore is not None
+            else nullcontext()
+        )
+        with read_guard:
+            obj_events = FileParser._read_file_in_batches(
+                tree,
+                all_branches,
+                obj_branches,
+                n_entries,
+                batch_size
+            )
         obj_events = FileParser._split_combined_leptons(obj_events, release_year)
         should_calculate_jet_tags = (
             enable_jet_tagging
@@ -133,6 +151,15 @@ class FileParser:
                 if name in requested
             }
         return ak.zip(obj_events, depth_limit=1)
+
+    @staticmethod
+    def _should_limit_remote_read(
+        file_path: str,
+        n_entries: int,
+        minimum_entries: int,
+    ) -> bool:
+        is_remote = file_path.startswith(("root://", "http://", "https://"))
+        return is_remote and n_entries >= minimum_entries
 
     @staticmethod
     def _restrict_branches_to_requested_objects(
