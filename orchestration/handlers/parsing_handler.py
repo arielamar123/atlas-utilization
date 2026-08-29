@@ -21,7 +21,10 @@ from services.parsing.event_accumulator import EventAccumulator
 from services.parsing.threaded_processor import ThreadedFileProcessor, ParsingStatisticsCollector
 from domain.statistics import ParsingStatistics
 from domain.events import EventBatch
-from services.parsing.event_selection import apply_parsing_event_selection
+from services.parsing.event_selection import (
+    apply_parsing_event_selection,
+    normalize_particle_collections,
+)
 from utils.batching import get_batch_slice_by_year
 
 
@@ -127,6 +130,13 @@ class ParsingHandler(StateHandler):
             self.logger.warning("No parsing config or metadata, skipping parsing")
             next_state = self._determine_next_state(context)
             return context, next_state
+
+        mass_config = context.config.mass_calculation_config
+        if mass_config is None:
+            raise ValueError(
+                "mass_calculation_task_config.objects_to_calculate is required "
+                "when parsing is enabled"
+            )
         
         start_time = datetime.now()
         stats_collector = ParsingStatisticsCollector()
@@ -196,18 +206,22 @@ class ParsingHandler(StateHandler):
                         particle_counts=parsing_config.particle_counts,
                         kinematic_cuts=parsing_config.kinematic_cuts,
                     )
-                    batch = EventBatch(
-                        events=filtered,
-                        file_id=batch.file_id,
-                        release_year=batch.release_year,
-                        size_bytes=(
-                            filtered.layout.nbytes
-                            if hasattr(filtered, "layout")
-                            else batch.size_bytes
-                        ),
-                        event_count=len(filtered),
-                        processing_time_sec=batch.processing_time_sec,
-                    )
+                else:
+                    filtered = batch.events
+
+                normalized = normalize_particle_collections(
+                    filtered,
+                    mass_config.objects_to_calculate,
+                    batch.release_year,
+                )
+                batch = EventBatch(
+                    events=normalized,
+                    file_id=batch.file_id,
+                    release_year=batch.release_year,
+                    size_bytes=normalized.layout.nbytes,
+                    event_count=len(normalized),
+                    processing_time_sec=batch.processing_time_sec,
+                )
 
                 # Accumulate batch into chunks
                 chunk = self.accumulator.add_batch(batch)

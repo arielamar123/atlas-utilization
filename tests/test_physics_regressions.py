@@ -16,6 +16,7 @@ from services.calculations.physics_calcs import (
     find_actual_field_name,
 )
 from services.parsing.file_parser import FileParser
+from services.parsing.event_selection import normalize_particle_collections
 from services.parsing.threaded_processor import ThreadedFileProcessor
 from services.storage.sqlite_shards import (
     SqliteArrayShardWriter,
@@ -27,6 +28,7 @@ from orchestration.handlers.parsing_handler import select_metadata_for_parsing
 from orchestration.handlers.mass_calculation_handler import MassCalculationHandler
 from services.metadata.fetcher import MetadataFetcher
 from domain.events import EventBatch
+from domain.events import EventChunk
 from domain.config import PipelineConfig
 from services.parsing.event_accumulator import EventAccumulator
 
@@ -45,6 +47,88 @@ def _particles(counts, *, charge=1):
         ]
         for count in counts
     ])
+
+
+class ConfigDrivenParticleCollectionTests(unittest.TestCase):
+    def test_mixed_file_schemas_keep_every_requested_collection(self):
+        jets = ak.Array([[{
+            "pt": 100_000.0, "eta": 0.0, "phi": 0.0, "mass": 10_000.0
+        }]])
+        leptons = _particles([1], charge=-1)
+        requested = ("Electrons", "Muons", "Jets", "BJets", "Photons")
+
+        first = normalize_particle_collections(
+            ak.zip({"Jets": jets, "Taus": jets}, depth_limit=1),
+            requested,
+            "2024r-pp",
+        )
+        second = normalize_particle_collections(
+            ak.zip(
+                {"Electrons": leptons, "Muons": leptons, "Jets": jets},
+                depth_limit=1,
+            ),
+            requested,
+            "2024r-pp",
+        )
+        chunk = EventChunk.from_batches(
+            [
+                EventBatch(first, 0, "2024r-pp", first.layout.nbytes, 1, 0.1),
+                EventBatch(second, 1, "2024r-pp", second.layout.nbytes, 1, 0.1),
+            ],
+            chunk_index=0,
+            release_year="2024r-pp",
+        )
+
+        self.assertEqual(chunk.events.fields, list(requested))
+        self.assertNotIn("Taus", chunk.events.fields)
+        self.assertEqual(ak.to_list(ak.num(chunk.events.Electrons)), [0, 1])
+        self.assertEqual(ak.to_list(ak.num(chunk.events.Muons)), [0, 1])
+
+    def test_missing_requested_collection_is_typed_for_root_output(self):
+        jets = ak.Array([[{
+            "pt": 100_000.0, "eta": 0.0, "phi": 0.0, "mass": 10_000.0
+        }]])
+        normalized = normalize_particle_collections(
+            ak.zip({"Jets": jets}, depth_limit=1),
+            ("Electrons", "Jets"),
+            "2024r-pp",
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "normalized.root")
+            import uproot
+            with uproot.recreate(path) as root_file:
+                root_file["events"] = {
+                    field: normalized[field] for field in normalized.fields
+                }
+            with uproot.open(path) as root_file:
+                branches = set(root_file["events"].keys())
+
+        self.assertIn("Electrons_pt", branches)
+        self.assertIn("Electrons_charge", branches)
+        self.assertIn("Jets_pt", branches)
+
+    def test_config_parser_loads_objects_for_parsing_only_runs(self):
+        config = {
+            "tasks": {"do_parsing": True},
+            "parsing_task_config": {
+                "output_path": "/tmp/parsed",
+                "file_urls_path": "/tmp/files.json",
+                "jobs_logs_path": "/tmp/logs",
+            },
+            "mass_calculation_task_config": {
+                "input_dir": "/tmp/parsed",
+                "output_dir": "/tmp/masses",
+                "objects_to_calculate": ["Muons", "Jets"],
+            },
+        }
+
+        parsed = PipelineConfig.from_dict(config)
+
+        self.assertEqual(
+            parsed.mass_calculation_config.objects_to_calculate,
+            ("Muons", "Jets"),
+        )
 
 
 class FinalStateAlignmentTests(unittest.TestCase):
