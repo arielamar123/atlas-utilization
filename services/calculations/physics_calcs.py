@@ -42,9 +42,15 @@ def concat_events(particle_events: ak.Array) -> list:
     return all_vectors
 
 
-def get_particle_known_mass(particle_type: str, particle_array: ak.Array) -> ak.Array:
+def get_particle_known_mass(
+    particle_type: str,
+    particle_array: ak.Array,
+    momentum_scale_to_gev: float = 1e-3,
+) -> ak.Array:
+    if 'mass' in particle_array.fields:
+        return particle_array.mass * momentum_scale_to_gev
     if 'm' in particle_array.fields:
-        return particle_array.m
+        return particle_array.m * momentum_scale_to_gev
     return consts.KNOWN_MASSES.get(particle_type, 0.0)
 
 

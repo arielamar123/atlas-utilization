@@ -1,6 +1,7 @@
 import unittest
 
 import awkward as ak
+import math
 
 from services.calculations.im_calculator import IMCalculator
 
@@ -46,6 +47,34 @@ class CombinationSelectionTests(unittest.TestCase):
 
         self.assertEqual(len(selected), 1)
         self.assertEqual(ak.to_list(ak.num(sliced.Electrons)), [2])
+
+
+class InvariantMassUnitTests(unittest.TestCase):
+    def test_parsed_mass_field_is_used_and_atlas_mev_is_converted(self):
+        jets = ak.Array([[
+            {"pt": 100_000.0, "eta": 0.0, "phi": 0.0, "mass": 10_000.0},
+            {"pt": 100_000.0, "eta": 0.0, "phi": math.pi, "mass": 10_000.0},
+        ]])
+        events = ak.zip({"Jets": jets}, depth_limit=1)
+        calculator = IMCalculator(events, 1, 1, 4, 1, 4)
+
+        mass = ak.to_list(calculator.calculate_invariant_mass(events))[0]
+
+        self.assertAlmostEqual(mass, 200.997512, places=5)
+
+    def test_cms_gev_inputs_are_not_divided_by_one_thousand(self):
+        muons = ak.Array([[
+            {"pt": 50.0, "eta": 0.0, "phi": 0.0, "mass": 0.105},
+            {"pt": 50.0, "eta": 0.0, "phi": math.pi, "mass": 0.105},
+        ]])
+        events = ak.zip({"Muons": muons}, depth_limit=1)
+        calculator = IMCalculator(
+            events, 1, 1, 4, 1, 4, momentum_scale_to_gev=1.0
+        )
+
+        mass = ak.to_list(calculator.calculate_invariant_mass(events))[0]
+
+        self.assertAlmostEqual(mass, 100.0002205, places=5)
 
 
 if __name__ == "__main__":

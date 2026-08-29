@@ -15,13 +15,15 @@ from services.calculations.combinatorics import get_count, get_start
 
 class IMCalculator:
     def __init__(self, events: ak.Array, min_events_per_fs: int,
-                 min_k: int, max_k: int, min_n: int, max_n: int):
+                 min_k: int, max_k: int, min_n: int, max_n: int,
+                 momentum_scale_to_gev: float = 1e-3):
         self.events = events
         self.min_events_per_fs = min_events_per_fs
         self.min_k = min_k
         self.max_k = max_k
         self.min_n = min_n
         self.max_n = max_n
+        self.momentum_scale_to_gev = momentum_scale_to_gev
         self._all_events_fs = None
         vector.register_awkward()
 
@@ -43,7 +45,7 @@ class IMCalculator:
             particle_array = particle_events[particle_type]
             mass = self._get_particle_mass(particle_type, particle_array)
             momentum_vector = vector.zip({
-                "pt": particle_array.pt,
+                "pt": particle_array.pt * self.momentum_scale_to_gev,
                 "phi": particle_array.phi,
                 "eta": particle_array.eta,
                 "mass": mass
@@ -51,10 +53,12 @@ class IMCalculator:
             all_vectors.append(momentum_vector)
         return all_vectors
 
-    @staticmethod
-    def _get_particle_mass(particle_type: str, particle_array: ak.Array) -> ak.Array:
+    def _get_particle_mass(self, particle_type: str, particle_array: ak.Array) -> ak.Array:
+        if 'mass' in particle_array.fields:
+            return particle_array.mass * self.momentum_scale_to_gev
         if 'm' in particle_array.fields:
-            return particle_array.m
+            return particle_array.m * self.momentum_scale_to_gev
+        # Known masses are stored in GeV and vectors are constructed in GeV.
         return consts.KNOWN_MASSES.get(particle_type, 0.0)
 
     def _get_all_events_fs(self) -> ak.Array:

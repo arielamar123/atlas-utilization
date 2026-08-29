@@ -100,8 +100,6 @@ def process_final_state(
                 stats['skip_reasons'][skip_reason] += 1
             continue
 
-        inv_mass = _convert_array_to_gev(inv_mass)
-
         stats['calculated'] += 1
         combination_name = prepare_im_combination_name(filename, final_state, combination)
         saved_files = _accumulate_invariant_mass(
@@ -128,10 +126,6 @@ def process_final_state(
     )
 
     return stats, created_im_files
-
-
-def _convert_array_to_gev(inv_mass: ak.Array) -> ak.Array:
-    return inv_mass * 1e-3
 
 
 def _calculate_combination_invariant_mass(

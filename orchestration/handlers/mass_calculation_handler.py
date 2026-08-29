@@ -253,6 +253,7 @@ class MassCalculationHandler(StateHandler):
             max_k=mc.max_count_particle_in_combination,
             min_n=mc.min_particles_in_combination,
             max_n=mc.max_particles_in_combination,
+            momentum_scale_to_gev=self._momentum_scale_to_gev(root_file_path.name),
         )
 
         created_files: List[str] = []
@@ -279,3 +280,13 @@ class MassCalculationHandler(StateHandler):
             f"{root_file_path.name}: created {len(created_files)} IM array(s)"
         )
         return created_files
+
+    @staticmethod
+    def _momentum_scale_to_gev(filename: str) -> float:
+        """Return the input momentum-unit conversion for a parsed artifact."""
+        lowered = filename.lower()
+        # CMS NanoAOD record inputs are stored in GeV. ATLAS xAOD/PHYSLITE
+        # inputs use MeV and are converted while constructing four-vectors.
+        if "record_" in lowered or "cms" in lowered:
+            return 1.0
+        return 1e-3
