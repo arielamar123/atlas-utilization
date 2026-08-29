@@ -12,7 +12,7 @@ paths:
   jobs_logs_path:          &jobs_logs_path          "./output/logs"
 
 names:
-  run_name:           &run_name           "atlas_minEvt10_maxTot4_up4j_sublead_btag_mc"
+  run_name:           &run_name           "atlas_minEvt10_maxTot4_up4j_sublead_btag"
   histogram_filename: &histogram_filename "atlas_opendata_minEvt10_maxTot4_up4j_sublead_iso_btag_bumpnet.root"
 
 run_metadata:
@@ -41,7 +41,7 @@ parsing_task_config:
   release_years:
     - "2024r-pp"
   specific_record_ids: null
-  parse_mc: true
+  parse_mc: false
   use_multiprocessing: false
   parallel_processes: 4
   threads: 4
@@ -49,7 +49,7 @@ parsing_task_config:
   chunk_yield_threshold_bytes: 2147483648
   count_retries_failed_files: 3
   fetching_metadata_timeout: 60
-  max_files_to_process: 10
+  max_files_to_process: 1000
   possible_data_tree_names:
     - "CollectionTree"
     - "mini"
@@ -62,7 +62,7 @@ parsing_task_config:
     muons:     { min: 0, max: 4 }
     jets:      { min: 0, max: 4 }
     bjets:     { min: 0, max: 4 }
-    photons:   { min: 0, max: 0 }
+    photons:   { min: 0, max: 4 }
     taus:      { min: 0, max: 0 }
   kinematic_cuts:
     electrons: { pt_min: 25000.0, eta_max: 2.47, rel_isolation_max: 0.06}
@@ -70,7 +70,7 @@ parsing_task_config:
     muons:     { pt_min: 25000.0, eta_max: 2.5 }
     jets:      { pt_min: 30000.0, eta_max: 4.5 }
     bjets:     { pt_min: 30000.0, eta_max: 4.5 }
-    # photons:   { pt_min: 25000.0, eta_max: 2.37 }
+    photons:   { pt_min: 25000.0, eta_max: 2.37 }
     # taus:      { pt_min: 25000.0, eta_max: 2.5 }
 
   enable_jet_tagging: true              # when true, split Jets into BJets/LJets. Must give thresholds for btagging discriminants!
@@ -83,10 +83,10 @@ mass_calculation_task_config:
   output_dir: *im_arrays_path
   field_to_slice_by: "pt"
   use_multiprocessing: true
-  parallel_processes: 4
+  parallel_processes: 8
   fs_chunk_threshold_bytes: 2000000000
   # objects_to_calculate: [Electrons, Muons, Jets, BJets, Photons, Taus]
-  objects_to_calculate: [Electrons, Muons, Jets, BJets]
+  objects_to_calculate: [Electrons, Muons, Jets, BJets, Photons]
   min_particles_in_combination: 1
   max_particles_in_combination: 4
   min_count_particle_in_combination: 1
