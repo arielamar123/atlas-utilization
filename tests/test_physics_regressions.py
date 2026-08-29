@@ -21,6 +21,7 @@ from services.storage.sqlite_shards import (
     prune_final_states_below_min_events,
 )
 from services.pipelines.im_pipeline import _apply_ossf_dilepton_cut
+from orchestration.handlers.parsing_handler import select_metadata_for_parsing
 
 
 def _particles(counts, *, charge=1):
@@ -257,6 +258,28 @@ class OSSFZCutTests(unittest.TestCase):
         )
 
         self.assertEqual(ak.to_list(kept), [100.0])
+
+
+class MetadataModeSelectionTests(unittest.TestCase):
+    def test_parse_mc_selects_mc_partner_of_base_release(self):
+        metadata = {
+            "2024r-pp": ["data.root"],
+            "2024r-pp_mc": ["mc.root"],
+        }
+
+        selected = select_metadata_for_parsing(metadata, ["2024r-pp"], True)
+
+        self.assertEqual(selected, {"2024r-pp_mc": ["mc.root"]})
+
+    def test_data_mode_excludes_mc_partner(self):
+        metadata = {
+            "2024r-pp": ["data.root"],
+            "2024r-pp_mc": ["mc.root"],
+        }
+
+        selected = select_metadata_for_parsing(metadata, ["2024r-pp"], False)
+
+        self.assertEqual(selected, {"2024r-pp": ["data.root"]})
 
 
 if __name__ == "__main__":
