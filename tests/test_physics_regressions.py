@@ -4,6 +4,7 @@ import awkward as ak
 import math
 import os
 import tempfile
+from unittest import mock
 
 import numpy as np
 
@@ -22,6 +23,7 @@ from services.storage.sqlite_shards import (
 )
 from services.pipelines.im_pipeline import _apply_ossf_dilepton_cut
 from orchestration.handlers.parsing_handler import select_metadata_for_parsing
+from services.metadata.fetcher import MetadataFetcher
 
 
 def _particles(counts, *, charge=1):
@@ -280,6 +282,24 @@ class MetadataModeSelectionTests(unittest.TestCase):
         selected = select_metadata_for_parsing(metadata, ["2024r-pp"], False)
 
         self.assertEqual(selected, {"2024r-pp": ["data.root"]})
+
+
+class MetadataCompletenessTests(unittest.TestCase):
+    def test_one_failed_dataset_rejects_the_release(self):
+        fetcher = MetadataFetcher(timeout=1)
+        with (
+            mock.patch("services.metadata.fetcher.atom.set_release"),
+            mock.patch(
+                "services.metadata.fetcher.atom.available_datasets",
+                return_value=[1, 2],
+            ),
+            mock.patch(
+                "services.metadata.fetcher.atom.get_urls",
+                side_effect=[["first.root"], OSError("API failure")],
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "before release .* was complete"):
+                fetcher._fetch_urls_for_releases(["2024r-pp"])
 
 
 if __name__ == "__main__":

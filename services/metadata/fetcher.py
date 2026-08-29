@@ -244,9 +244,7 @@ class MetadataFetcher:
         
         with ThreadPoolExecutor(max_workers=1) as executor:
             for year in release_years:
-                if year not in release_files:
-                    release_files[year] = []
-                
+                year_urls = []
                 try:
                     # Set the release in atlasopenmagic
                     future = executor.submit(atom.set_release, year)
@@ -260,16 +258,17 @@ class MetadataFetcher:
                         future = executor.submit(atom.get_urls, dataset_id)
                         urls = future.result(timeout=self.timeout)
                         if urls:
-                            release_files[year].extend(urls)
+                            year_urls.extend(urls)
                 
-                except TimeoutError:
-                    logging.warning(
-                        f"Timeout while fetching metadata for release year {year}"
-                    )
+                except TimeoutError as exc:
+                    raise RuntimeError(
+                        f"Metadata fetch timed out before release {year} was complete"
+                    ) from exc
                 except Exception as e:
-                    logging.warning(
-                        f"Could not fetch metadata for release year {year}: {e}"
-                    )
+                    raise RuntimeError(
+                        f"Metadata fetch failed before release {year} was complete"
+                    ) from e
+                release_files[year] = year_urls
         
         return release_files
     
