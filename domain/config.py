@@ -55,6 +55,8 @@ class ParsingConfig:
     # Data selection
     possible_data_tree_names: tuple[str, ...] = ("CollectionTree",)
     max_files_to_process: Optional[int] = None  # Limit files (for testing)
+    randomize_file_order: bool = False
+    file_order_random_seed: Optional[int] = None
     enable_jet_tagging: bool = False
     jet_btagging_thresholds: Optional[dict] = None
 
@@ -80,6 +82,16 @@ class ParsingConfig:
             raise ValueError("jobs_logs_path cannot be empty")
         if not isinstance(self.enable_jet_tagging, bool):
             raise ValueError("enable_jet_tagging must be a boolean")
+        if not isinstance(self.randomize_file_order, bool):
+            raise ValueError("randomize_file_order must be a boolean")
+        if (
+            self.file_order_random_seed is not None
+            and (
+                not isinstance(self.file_order_random_seed, int)
+                or isinstance(self.file_order_random_seed, bool)
+            )
+        ):
+            raise ValueError("file_order_random_seed must be an integer or null")
         if self.enable_jet_tagging and not self.jet_btagging_thresholds:
             # TODO add algorithm-specific validation
             raise ValueError("jet_btagging_thresholds must be specified when enable_jet_tagging is set")
@@ -304,6 +316,8 @@ class PipelineConfig:
                 fetching_metadata_timeout=parsing_dict.get("fetching_metadata_timeout", 60),
                 possible_data_tree_names=tuple(parsing_dict.get("possible_data_tree_names", ["CollectionTree"])),
                 max_files_to_process=parsing_dict.get("max_files_to_process"),
+                randomize_file_order=parsing_dict.get("randomize_file_order", False),
+                file_order_random_seed=parsing_dict.get("file_order_random_seed"),
                 enable_jet_tagging=parsing_dict.get("enable_jet_tagging", False),
                 jet_btagging_thresholds=parsing_dict.get("jet_btagging_thresholds", None),
                 particle_counts=parsing_dict.get("particle_counts"),

@@ -162,6 +162,8 @@ python main.py --dry-run
 | `parsing_task_config` | `release_years` | Which ATLAS data releases to fetch (e.g. `[2024r-pp, 2020e-13tev]`) |
 | `parsing_task_config` | `specific_record_ids` | List of CERN record IDs to process instead of (or in addition to) releases |
 | `parsing_task_config` | `max_files_to_process` | `null` = all files, or an integer to cap file count for testing |
+| `parsing_task_config` | `randomize_file_order` | Shuffle ATLAS files before batch splitting and `max_files_to_process` is applied |
+| `parsing_task_config` | `file_order_random_seed` | Integer seed for reproducible shuffling, or `null` for a new order each run |
 | `parsing_task_config` | `threads` | Number of threads for parallel file download and parsing |
 | `mass_calculation_task_config` | `min_events_per_fs` | Drop final states with fewer events than this threshold |
 | `mass_calculation_task_config` | `objects_to_calculate` | Which particle types to include in combinations |

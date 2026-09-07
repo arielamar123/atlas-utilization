@@ -88,6 +88,8 @@ parsing_task_config:
   count_retries_failed_files: 3
   fetching_metadata_timeout: 60
   max_files_to_process: 100              # data files only because parse_mc is false
+  randomize_file_order: false            # shuffle ATLAS files before batching/limiting
+  file_order_random_seed: 42             # fixed seed makes the shuffled order reproducible
   enable_jet_tagging: true              # when true, split Jets into BJets/LJets. Must give thresholds for btagging discriminants!
   jet_btagging_thresholds:
     btagDeepFlavB: 0.5

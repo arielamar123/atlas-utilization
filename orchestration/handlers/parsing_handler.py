@@ -6,6 +6,7 @@ Supports batch job splitting via batch_job_index / total_batch_jobs.
 """
 
 import os
+import random
 from datetime import datetime
 from pathlib import Path
 import uproot
@@ -66,6 +67,24 @@ def select_metadata_for_parsing(
         for key, urls in metadata.items()
         if key.startswith("record_") or key.endswith("_mc") == parse_mc
     }
+
+
+def randomize_metadata_file_order(
+    metadata: dict[str, list[str]],
+    seed: int | None = None,
+) -> dict[str, list[str]]:
+    """Return copied metadata with each release's file URLs shuffled.
+
+    A local random-number generator avoids changing global random state. With a
+    configured seed, every batch job derives the same ordering before slicing,
+    so files remain reproducibly and exclusively assigned between jobs.
+    """
+    rng = random.Random(seed)
+    randomized = {}
+    for release_year, file_urls in metadata.items():
+        randomized[release_year] = list(file_urls)
+        rng.shuffle(randomized[release_year])
+    return randomized
 
 
 class ParsingHandler(StateHandler):
@@ -166,6 +185,18 @@ class ParsingHandler(StateHandler):
             parsing_config.release_years,
             list(metadata.keys()),
         )
+
+        if parsing_config.randomize_file_order:
+            metadata = randomize_metadata_file_order(
+                metadata,
+                parsing_config.file_order_random_seed,
+            )
+            self.logger.info(
+                "Randomized ATLAS file order before batching and file limits "
+                "(seed=%s)",
+                parsing_config.file_order_random_seed,
+            )
+
         batch_idx = context.config.batch_job_index
         total_batches = context.config.total_batch_jobs
         
