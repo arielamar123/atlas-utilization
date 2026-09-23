@@ -209,6 +209,10 @@ class ParsingHandler(StateHandler):
                 batch_size=40_000,
                 enable_jet_tagging=parsing_config.enable_jet_tagging,
                 jet_btagging_thresholds=parsing_config.jet_btagging_thresholds,
+                objects_to_parse=(
+                    context.config.mass_calculation_config.objects_to_calculate
+                    if context.config.mass_calculation_config else None
+                ),
                 on_success=on_success,
                 on_error=on_error
             ):

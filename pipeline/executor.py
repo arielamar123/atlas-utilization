@@ -384,6 +384,10 @@ class PipelineExecutor:
         total_size_bytes = 0
         particle_counts = {}
         events_per_file = []
+        mass_config = self.config.mass_calculation_config
+        allowed_objects = (
+            set(mass_config.objects_to_calculate) if mass_config else None
+        )
 
         for rf in root_files:
             try:
@@ -399,6 +403,8 @@ class PipelineExecutor:
                     for branch_name in tree.keys():
                         if branch_name.startswith("n") and branch_name != "nEvents":
                             ptype = branch_name[1:]
+                            if allowed_objects is not None and ptype not in allowed_objects:
+                                continue
                             # Only read sum, not full array — avoids memory blowup
                             counts = tree[branch_name].array(library="np")
                             particle_counts[ptype] = particle_counts.get(ptype, 0) + int(np.sum(counts))

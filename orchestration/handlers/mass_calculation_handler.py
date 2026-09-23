@@ -207,6 +207,9 @@ class MassCalculationHandler(StateHandler):
                     raise RuntimeError(
                         f"could not load final-state counts from {root_file_path.name}"
                     )
+                particle_arrays = self._restrict_to_calculation_objects(
+                    particle_arrays, mc.objects_to_calculate
+                )
                 calculator = IMCalculator(
                     particle_arrays,
                     min_events_per_fs=1,
@@ -317,6 +320,18 @@ class MassCalculationHandler(StateHandler):
         )
         return None
 
+    @staticmethod
+    def _restrict_to_calculation_objects(
+        particle_arrays: ak.Array, objects_to_calculate: tuple[str, ...]
+    ) -> ak.Array:
+        """Drop excluded fields before any final-state statistics are computed."""
+        allowed = {
+            name: particle_arrays[name]
+            for name in objects_to_calculate
+            if name in particle_arrays.fields
+        }
+        return ak.zip(allowed, depth_limit=1)
+
     def _process_single_parsed_file(
         self,
         root_file_path: Path,
@@ -334,6 +349,9 @@ class MassCalculationHandler(StateHandler):
         particle_arrays = self._load_particle_arrays(root_file_path)
         if particle_arrays is None:
             return []
+        particle_arrays = self._restrict_to_calculation_objects(
+            particle_arrays, mc.objects_to_calculate
+        )
 
         num_events = len(particle_arrays)
         if num_events == 0:

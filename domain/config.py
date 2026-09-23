@@ -8,6 +8,21 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+YAML_PARTICLE_TO_OBJECT = {
+    "electrons": "Electrons",
+    "muons": "Muons",
+    "jets": "Jets",
+    "bjets": "BJets",
+    "photons": "Photons",
+    "taus": "Taus",
+}
+
+
+def _canonical_particle_object_name(name: str) -> str:
+    """Map YAML particle-count keys to the canonical event field name."""
+    return YAML_PARTICLE_TO_OBJECT.get(name.lower(), name)
+
+
 @dataclass(frozen=True)
 class TaskConfig:
     """Configuration for which tasks to run."""
@@ -254,6 +269,24 @@ class PipelineConfig:
                 raise ValueError(
                     f"batch_job_index ({self.batch_job_index}) must be <= "
                     f"total_batch_jobs ({self.total_batch_jobs})"
+                )
+
+        # Parsing selection is part of the mass-calculation contract.  A zero
+        # maximum is still a request to inspect an object, so it must not be
+        # used to smuggle an excluded object back into the parsed event data.
+        if self.parsing_config and self.mass_calculation_config:
+            particle_counts = self.parsing_config.particle_counts or {}
+            allowed_objects = set(self.mass_calculation_config.objects_to_calculate)
+            disallowed = sorted({
+                _canonical_particle_object_name(key)
+                for key in particle_counts
+                if _canonical_particle_object_name(key) not in allowed_objects
+            })
+            if disallowed:
+                raise ValueError(
+                    "parsing_task_config.particle_counts contains object(s) not "
+                    "listed in mass_calculation_task_config.objects_to_calculate: "
+                    f"{', '.join(disallowed)}"
                 )
     
     @classmethod
