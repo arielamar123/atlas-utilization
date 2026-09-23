@@ -97,10 +97,7 @@ class FileParser:
             all_tree_branches,
             release_year,
             objects_to_parse=objects_to_parse,
-            include_btagging_branches=(
-                enable_jet_tagging
-                and (objects_to_parse is None or "BJets" in objects_to_parse)
-            ),
+            include_btagging_branches=enable_jet_tagging,
         )
 
         if not obj_branches:
@@ -112,18 +109,36 @@ class FileParser:
         if not obj_branches:
             logging.warning(f"No accessible particles found in file {file_path}")
             return None
+
+        excluded_object_count_branches = (
+            FileParser._extract_excluded_object_count_branches(
+                tree, all_tree_branches, release_year, objects_to_parse
+            )
+            if objects_to_parse is not None
+            else {}
+        )
         
         all_branches = set(itertools.chain.from_iterable(obj_branches.values()))
+        all_branches.update(
+            branch_name
+            for branch_name, _is_count_branch
+            in excluded_object_count_branches.values()
+        )
         obj_events, read_error = FileParser._read_file_in_batches(
             tree,
             all_branches,
             obj_branches,
+            excluded_object_count_branches,
             n_entries,
             batch_size
         )
         obj_events = FileParser._split_combined_leptons(obj_events, release_year)
         if enable_jet_tagging:
             obj_events = FileParser._calculate_btagging_and_split(obj_events, jet_btagging_thresholds)
+        if objects_to_parse is not None:
+            obj_events = FileParser._exclude_unrequested_object_events(
+                obj_events, objects_to_parse
+            )
         # Strip out DirectObjects -- they are not physics objects!
         if "DirectObjects" in obj_events.keys():
             obj_events.pop("DirectObjects")
@@ -261,7 +276,9 @@ class FileParser:
         # B-jets are derived from jets, so jets are an internal parsing
         # dependency when BJets is selected. They are removed before output.
         schema_objects = set(allowed_objects or objects)
-        if allowed_objects is not None and "BJets" in allowed_objects:
+        if allowed_objects is not None and (
+            "BJets" in allowed_objects or include_btagging_branches
+        ):
             schema_objects.add("Jets")
         direct_objects = (
             schema_config.get("direct_objects", []) if include_btagging_branches else []
@@ -287,6 +304,90 @@ class FileParser:
         if direct_objects:
             obj_branches["DirectObjects"] = {k: k for k in direct_objects}
         return obj_branches
+
+    @staticmethod
+    def _extract_excluded_object_count_branches(
+        tree,
+        tree_branches: set[str],
+        release_year: str,
+        objects_to_parse: Collection[str],
+    ) -> dict[str, tuple[str, bool]]:
+        """Find the smallest branch needed to veto excluded object types.
+
+        A ROOT count branch is a scalar per event and is preferred.  For
+        vector-backed collections without one, use only the jagged ``pt``
+        branch to obtain its list length.  Neither form is ever materialized
+        as an output physics object.
+        """
+        requested = set(objects_to_parse)
+        try:
+            record_id = None
+            if release_year.startswith("record_"):
+                record_id = int(release_year.split("_")[1])
+            schema = schemas.get_schema_for_release(release_year, record_id=record_id)
+            excluded = set(schema["objects"]) - requested
+        except (KeyError, ValueError, IndexError):
+            excluded = {
+                "Electrons", "Muons", "Jets", "Photons", "Taus"
+            } - requested
+
+        if not excluded:
+            return {}
+
+        object_branches = FileParser._extract_branches_by_schema(
+            tree_branches,
+            release_year,
+            objects_to_parse=excluded,
+        )
+        object_branches = FileParser._filter_accessible_branches(
+            tree, object_branches
+        )
+
+        result: dict[str, tuple[str, bool]] = {}
+        for object_name, branch_mapping in object_branches.items():
+            if object_name == "DirectObjects":
+                continue
+            pt_branch = next(
+                (branch for branch, field in branch_mapping.items() if field == "pt"),
+                None,
+            )
+            if pt_branch is None:
+                continue
+            try:
+                count_branch = tree[pt_branch].count_branch
+            except Exception:
+                count_branch = None
+            result[object_name] = (
+                (count_branch.name, True)
+                if count_branch is not None
+                else (pt_branch, False)
+            )
+        return result
+
+    @staticmethod
+    def _exclude_unrequested_object_events(
+        obj_events: dict[str, ak.Array],
+        objects_to_parse: Collection[str],
+    ) -> dict[str, ak.Array]:
+        """Veto events containing derived collections outside the allow-list."""
+        allowed_objects = set(objects_to_parse)
+        excluded_fields = [
+            object_name
+            for object_name in obj_events
+            if object_name not in allowed_objects and object_name != "DirectObjects"
+        ]
+        if not excluded_fields:
+            return obj_events
+
+        reference = next(iter(obj_events.values()))
+        keep_mask = ak.ones_like(ak.num(reference), dtype=bool)
+        for object_name in excluded_fields:
+            keep_mask = keep_mask & (ak.num(obj_events[object_name]) == 0)
+
+        return {
+            object_name: particles[keep_mask]
+            for object_name, particles in obj_events.items()
+        }
     
     @staticmethod
     def _prepare_obj_branch_name(
@@ -513,6 +614,7 @@ class FileParser:
         tree,
         all_branches: set[str],
         obj_branches: dict[str, dict[str, str]],
+        excluded_object_count_branches: dict[str, tuple[str, bool]],
         n_entries: int,
         batch_size: int
     ) -> tuple[dict[str, ak.Array], Optional[Exception]]:
@@ -545,6 +647,22 @@ class FileParser:
                 )
                 logging.warning("Stopping partial ROOT read: %s", read_error)
                 break
+
+            keep_mask = None
+            for object_name, (branch_name, is_count_branch) in (
+                excluded_object_count_branches.items()
+            ):
+                if branch_name not in batch_data.fields:
+                    raise RuntimeError(
+                        f"Missing multiplicity branch {branch_name!r} for excluded "
+                        f"object {object_name!r}"
+                    )
+                values = batch_data[branch_name]
+                object_count = values if is_count_branch else ak.num(values)
+                object_mask = object_count == 0
+                keep_mask = (
+                    object_mask if keep_mask is None else keep_mask & object_mask
+                )
             
             for obj_name, branch_mapping in obj_branches.items():
                 available_branches = [
@@ -552,6 +670,8 @@ class FileParser:
                 ]
                 if available_branches:
                     subset = batch_data[available_branches]
+                    if keep_mask is not None:
+                        subset = subset[keep_mask]
                     if len(subset) > 0:
                         obj_events_by_quantities[obj_name].append(subset)
         
