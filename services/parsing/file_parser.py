@@ -44,6 +44,7 @@ class FileParser:
         batch_size: int = 40_000,
         enable_jet_tagging: bool = False,
         jet_btagging_thresholds: Optional[dict[str, float]] = None,
+        enable_trigger_matching: bool = False,
     ) -> Optional[ak.Array]:
         """
         Parse a single ROOT file and return events.
@@ -67,6 +68,7 @@ class FileParser:
                     file_path,
                     enable_jet_tagging,
                     jet_btagging_thresholds,
+                    enable_trigger_matching,
                 )
         except PartialFileReadError:
             raise
@@ -82,7 +84,8 @@ class FileParser:
         batch_size: int,
         file_path: str,
         enable_jet_tagging: bool,
-        jet_btagging_thresholds: Optional[dict[str, float]]
+        jet_btagging_thresholds: Optional[dict[str, float]],
+        enable_trigger_matching: bool = False,
     ) -> Optional[ak.Array]:
         """Parse an already-opened ROOT file."""
         tree_name = FileParser._get_data_tree_name(root_file.keys(), tree_names)
@@ -92,7 +95,8 @@ class FileParser:
         
         obj_branches = FileParser._extract_branches_by_schema(
             all_tree_branches,
-            release_year
+            release_year,
+            enable_trigger_matching=enable_trigger_matching,
         )
 
         if not obj_branches:
@@ -213,7 +217,8 @@ class FileParser:
     @staticmethod
     def _extract_branches_by_schema(
         tree_branches: set[str],
-        release_year: str
+        release_year: str,
+        enable_trigger_matching: bool = False,
     ) -> dict[str, dict[str, str]]:
         """
         Extract branches by object based on release-specific schema.
@@ -258,18 +263,19 @@ class FileParser:
         # Keep direct object names as-is, but store them under the "DirectObjects" key.
         obj_branches.update({"DirectObjects": {k: k for k in direct_objects}})
 
-        # Trigger matching branches (event-level, per-particle ElementLink vectors).
-        # Each branch is a ``var * var * ElementLink``; a non-empty inner list means
-        # that offline particle matched the HLT trigger object within ΔR < 0.07.
-        # Stored under ``_triggerMatch`` so downstream code can distinguish them
-        # from particle-type fields.
-        trigger_branches = schemas.get_all_trigger_branches()
-        available_trigger = [b for b in trigger_branches if b in tree_branches]
-        if available_trigger:
-            obj_branches["_triggerMatch"] = {b: b for b in available_trigger}
-        # MC only: the random run number picks each event's trigger year.
-        if schemas.RANDOM_RUN_NUMBER_BRANCH in tree_branches:
-            obj_branches["_runNumber"] = {schemas.RANDOM_RUN_NUMBER_BRANCH: "_runNumber"}
+        if enable_trigger_matching:
+            # Trigger matching branches are metadata used only by trigger
+            # selection. Do not read or materialize them when that selection is
+            # disabled: they are large and their layout varies between releases.
+            trigger_branches = schemas.get_all_trigger_branches()
+            available_trigger = [b for b in trigger_branches if b in tree_branches]
+            if available_trigger:
+                obj_branches["_triggerMatch"] = {b: b for b in available_trigger}
+            # MC only: the random run number picks each event's trigger year.
+            if schemas.RANDOM_RUN_NUMBER_BRANCH in tree_branches:
+                obj_branches["_runNumber"] = {
+                    schemas.RANDOM_RUN_NUMBER_BRANCH: "_runNumber"
+                }
 
         return obj_branches
     
@@ -549,21 +555,17 @@ class FileParser:
             if chunks:
                 concatenated = ak.concatenate(chunks)
                 if obj_name == "_triggerMatch":
-                    # Trigger branches are ``var * var * ElementLink``.
-                    # We collapse each to a single per-event boolean:
-                    # True if ANY particle in the event has a non-empty match
-                    # for that chain.  The result is a record of booleans keyed
-                    # by the original branch name.
+                    # Trigger ElementLink branches have differed in jagged depth
+                    # between productions. Collapse every list level below the
+                    # event axis instead of assuming a fixed ``var * var`` shape.
                     trig_fields = {}
                     for full_branch in obj_branches[obj_name].keys():
                         if full_branch not in concatenated.fields:
                             continue
                         raw = concatenated[full_branch]
-                        # raw[i] holds one entry per matched combination in event i;
-                        # raw[i][j] links the offline particle(s) of combination j.
-                        # The event matched if any combination is non-empty.
-                        per_particle_matched = ak.num(raw, axis=2) > 0
-                        trig_fields[full_branch] = ak.any(per_particle_matched, axis=1)
+                        trig_fields[full_branch] = (
+                            FileParser._collapse_trigger_matches(raw)
+                        )
                     if trig_fields:
                         result[obj_name] = ak.zip(trig_fields)
                 elif obj_name == "_runNumber":
@@ -575,6 +577,22 @@ class FileParser:
                     })
         
         return result, read_error
+
+    @staticmethod
+    def _collapse_trigger_matches(raw: ak.Array) -> ak.Array:
+        """Return one boolean per event for a trigger ElementLink branch.
+
+        A match is represented by a non-empty innermost list. Depending on the
+        PHYSLITE production, the branch can contain one or more jagged levels
+        below the event axis.
+        """
+        if raw.ndim <= 1:
+            return ak.values_astype(ak.fill_none(raw, False), np.bool_)
+
+        matched = ak.num(raw, axis=-1) > 0
+        while matched.ndim > 1:
+            matched = ak.any(matched, axis=-1)
+        return ak.fill_none(matched, False)
     
     @staticmethod
     def _auto_detect_branches(tree_branches: set[str]) -> dict[str, dict[str, str]]:

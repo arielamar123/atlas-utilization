@@ -211,6 +211,7 @@ class ParsingHandler(StateHandler):
                 batch_size=40_000,
                 enable_jet_tagging=parsing_config.enable_jet_tagging,
                 jet_btagging_thresholds=parsing_config.jet_btagging_thresholds,
+                enable_trigger_matching=trigger_cfg.get("enabled", False),
                 on_success=on_success,
                 on_error=on_error
             ):
