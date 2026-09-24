@@ -5,6 +5,7 @@ Extracts events from ATLAS ROOT files using uproot.
 No orchestration logic, no state management.
 """
 
+import json
 import logging
 import awkward as ak
 import numpy as np
@@ -117,6 +118,13 @@ class FileParser:
             n_entries,
             batch_size
         )
+        if "_triggerDecision" in obj_events:
+            obj_events["_triggerMatch"] = FileParser._decode_data_trigger_decisions(
+                root_file,
+                obj_events.pop("_triggerDecision"),
+                release_year,
+                file_path,
+            )
         obj_events = FileParser._split_combined_leptons(obj_events, release_year)
         if enable_jet_tagging:
             obj_events = FileParser._calculate_btagging_and_split(obj_events, jet_btagging_thresholds)
@@ -275,6 +283,12 @@ class FileParser:
             if schemas.RANDOM_RUN_NUMBER_BRANCH in tree_branches:
                 obj_branches["_runNumber"] = {
                     schemas.RANDOM_RUN_NUMBER_BRANCH: "_runNumber"
+                }
+            elif schemas.DATA_TRIGGER_DECISION_BRANCH in tree_branches:
+                # Data stores trigger decisions in a packed bit vector.  The
+                # file's embedded HLT menu maps its bits to chain names.
+                obj_branches["_triggerDecision"] = {
+                    schemas.DATA_TRIGGER_DECISION_BRANCH: "_triggerDecision"
                 }
 
         return obj_branches
@@ -492,7 +506,7 @@ class FileParser:
                 bp: qty for bp, qty in branch_mapping.items()
                 if bp in accessible_set
             }
-            if obj_name in ("DirectObjects", "_triggerMatch", "_runNumber"):
+            if obj_name in ("DirectObjects", "_triggerMatch", "_runNumber", "_triggerDecision"):
                 # These are not particle types — skip the inv-mass field check.
                 if accessible_branches:
                     accessible_obj_branches[obj_name] = accessible_branches
@@ -570,6 +584,10 @@ class FileParser:
                         result[obj_name] = ak.zip(trig_fields)
                 elif obj_name == "_runNumber":
                     result[obj_name] = concatenated[schemas.RANDOM_RUN_NUMBER_BRANCH]
+                elif obj_name == "_triggerDecision":
+                    result[obj_name] = concatenated[
+                        schemas.DATA_TRIGGER_DECISION_BRANCH
+                    ]
                 else:
                     result[obj_name] = ak.zip({
                         quantity: concatenated[full_branch]
@@ -593,6 +611,58 @@ class FileParser:
         while matched.ndim > 1:
             matched = ak.any(matched, axis=-1)
         return ak.fill_none(matched, False)
+
+    @staticmethod
+    def _decode_data_trigger_decisions(
+        root_file,
+        tav: ak.Array,
+        release_year: str,
+        file_path: str,
+    ) -> ak.Array:
+        """Decode data-file HLT decision bits using its embedded menu JSON.
+
+        Unlike MC, 2024 Run-2 Open Data does not persist the
+        ``AuxDyn.TrigMatchedObjects`` ElementLink decorations.  Its
+        ``xTrigDecisionAux.tav`` vector carries one bit per HLT chain; menu
+        counters in ``MetaData/TriggerMenuJson_HLT`` are one-based.
+        """
+        try:
+            metadata = root_file["MetaData"]
+            payloads = metadata[schemas.DATA_TRIGGER_MENU_PAYLOAD_BRANCH].array(
+                library="ak"
+            )
+            payload = ak.to_list(payloads)[0][0]
+            menu = json.loads(payload)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read the embedded HLT menu for data file {file_path}"
+            ) from exc
+
+        years = schemas.get_trigger_years(release_year, file_path)
+        if len(years) != 1:
+            raise ValueError(
+                f"Data file {file_path} did not resolve to exactly one trigger year: {years}"
+            )
+
+        fields = {}
+        for particle_chains in schemas.SINGLE_LEPTON_TRIGGER_CHAINS[years[0]].values():
+            for stem in particle_chains:
+                hlt_name = stem.removeprefix("AnalysisTrigMatch_")
+                chain = menu["chains"].get(hlt_name)
+                if chain is None:
+                    logging.warning("HLT chain %s is absent from %s", hlt_name, file_path)
+                    continue
+                bit = int(chain["counter"]) - 1
+                word = bit // 32
+                words = ak.pad_none(tav, word + 1, axis=1, clip=True)
+                value = ak.fill_none(words[:, word], 0)
+                fields[stem + schemas.TRIGGER_BRANCH_SUFFIX] = (
+                    (value >> np.uint32(bit % 32)) & np.uint32(1)
+                ) == 1
+
+        if not fields:
+            raise RuntimeError(f"No configured single-lepton HLT chains found in {file_path}")
+        return ak.zip(fields)
     
     @staticmethod
     def _auto_detect_branches(tree_branches: set[str]) -> dict[str, dict[str, str]]:

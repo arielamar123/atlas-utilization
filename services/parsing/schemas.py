@@ -53,13 +53,13 @@ NANOAOD_BTAGGING_OBJECTS = [
 SINGLE_LEPTON_TRIGGER_CHAINS = {
     "2015": {
         "Electrons": [
-            "AnalysisTrigMatch_HLT_e24_lhmedium_L1EM20VH",
+            "AnalysisTrigMatch_HLT_e24_lhmedium_iloose_L1EM20VH",
             "AnalysisTrigMatch_HLT_e60_lhmedium",
             "AnalysisTrigMatch_HLT_e120_lhloose",
         ],
         "Muons": [
             "AnalysisTrigMatch_HLT_mu20_iloose_L1MU15",
-            "AnalysisTrigMatch_HLT_mu40",
+            "AnalysisTrigMatch_HLT_mu50",
         ],
     },
     "2016": {
@@ -99,6 +99,15 @@ SINGLE_LEPTON_TRIGGER_CHAINS = {
 
 
 TRIGGER_BRANCH_SUFFIX = "AuxDyn.TrigMatchedObjects"
+
+# Data PHYSLITE files do not contain the MC-only ``TrigMatchedObjects``
+# ElementLink decorations.  They store the event trigger decision in this
+# serialisable xAOD auxiliary vector; the associated HLT menu JSON is in the
+# MetaData tree and maps each HLT chain to a one-based bit counter.
+DATA_TRIGGER_DECISION_BRANCH = "xTrigDecisionAux./xTrigDecisionAux.tav"
+DATA_TRIGGER_MENU_PAYLOAD_BRANCH = (
+    "TriggerMenuJson_HLTAux./TriggerMenuJson_HLTAux.payload"
+)
 
 # MC: the data-taking run each event simulates (pileup reweighting), used to
 # pick the event's trigger year.  Inclusive run ranges per year.
