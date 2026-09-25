@@ -19,9 +19,10 @@ class TriggerParsingTests(unittest.TestCase):
 
     class _RootFile:
         def __init__(self, payload, key=1):
+            keys = key if isinstance(key, (list, tuple)) else [key]
             self.metadata = {
                 schemas.DATA_TRIGGER_MENU_KEY_BRANCH:
-                    TriggerParsingTests._MetadataBranch(ak.Array([[key]])),
+                    TriggerParsingTests._MetadataBranch(ak.Array([[value] for value in keys])),
                 schemas.DATA_TRIGGER_MENU_PAYLOAD_BRANCH:
                     TriggerParsingTests._MetadataBranch(payload)
             }
@@ -56,7 +57,7 @@ class TriggerParsingTests(unittest.TestCase):
 
         result = FileParser._extract_branches_by_schema(
             tree_branches,
-            "2024r-pp",
+            "2024r-pp_mc",
             enable_trigger_matching=True,
         )
 
@@ -171,6 +172,101 @@ class TriggerParsingTests(unittest.TestCase):
 
         self.assertEqual(ak.to_list(selected["event"]), [0, 2])
         self.assertNotIn("_triggerRunNumber", selected.fields)
+
+    def test_mc_wrong_year_chains_cannot_accept_events(self):
+        events = ak.zip({
+            "event": [0, 1],
+            "_triggerRunNumber": [280000, 300000],
+            "_triggerPass": ak.zip({
+                "HLT_e24_lhmedium_L1EM20VH": [False, True],
+                "HLT_e26_lhtight_nod0_ivarloose": [True, False],
+            }),
+        }, depth_limit=1)
+        self.assertEqual(
+            ak.to_list(apply_trigger_selection(events, "2024r-pp_mc")["event"]), []
+        )
+
+    def test_mc_missing_random_run_number_is_an_error(self):
+        events = ak.zip({
+            "_triggerPass": ak.zip({"HLT_mu50": [True]}),
+        }, depth_limit=1)
+        with self.assertRaisesRegex(RuntimeError, "RandomRunNumber"):
+            apply_trigger_selection(events, "2024r-pp_mc", "mc.root")
+
+    def test_canonical_open_data_trigger_definitions_and_years(self):
+        self.assertEqual(schemas.RELEASE_TRIGGER_YEARS["2024r-pp"], ["2015", "2016"])
+        self.assertEqual(schemas.RELEASE_TRIGGER_YEARS["2024r-pp_mc"], ["2015", "2016"])
+        self.assertIn("HLT_e24_lhmedium_L1EM20VH", schemas.SINGLE_LEPTON_TRIGGER_CHAINS["2015"]["Electrons"])
+        self.assertIn("HLT_mu50", schemas.SINGLE_LEPTON_TRIGGER_CHAINS["2015"]["Muons"])
+        self.assertIn("HLT_e26_lhtight_nod0_ivarloose", schemas.SINGLE_LEPTON_TRIGGER_CHAINS["2016"]["Electrons"])
+        self.assertIn("HLT_mu50", schemas.SINGLE_LEPTON_TRIGGER_CHAINS["2016"]["Muons"])
+        self.assertNotIn("HLT_e24_lhmedium_iloose_L1EM20VH", schemas.SINGLE_LEPTON_TRIGGER_CHAINS["2015"]["Electrons"])
+
+    def test_data_prefers_genuine_matching_over_decision_fallback(self):
+        branch = schemas.get_all_trigger_branches()[0]
+        branches = {
+            branch, schemas.DATA_TRIGGER_DECISION_BRANCH, schemas.DATA_TRIGGER_SMK_BRANCH,
+        }
+        result = FileParser._extract_branches_by_schema(
+            branches, "2024r-pp", enable_trigger_matching=True,
+            file_path="data15_13TeV.root",
+        )
+        self.assertIn("_triggerMatch", result)
+        self.assertNotIn("_triggerDecision", result)
+
+    def test_data_uses_hlt_not_l1_tav_and_counter_boundaries(self):
+        payload = ak.Array([["""{"chains": {
+            "HLT_e24_lhmedium_L1EM20VH": {"counter": 31},
+            "HLT_e60_lhmedium": {"counter": 32},
+            "HLT_e120_lhloose": {"counter": 33}
+        }}"""]])
+        # A hypothetical L1 tav bit is on; only efPassedPhysics is supplied to
+        # the decoder and determines the result.
+        tav = [[(1 << 31), 0]]
+        self.assertTrue(tav[0][0])
+        failed = FileParser._decode_data_trigger_decisions(
+            self._RootFile(payload), ak.Array([[0, 0]]), ak.Array([1]),
+            "2024r-pp", "data15_13TeV.root",
+        )
+        self.assertEqual(ak.to_list(failed["HLT_e24_lhmedium_L1EM20VH"]), [False])
+        passed = FileParser._decode_data_trigger_decisions(
+            self._RootFile(payload), ak.Array([[(1 << 31), (1 << 0) | (1 << 1)]]), ak.Array([1]),
+            "2024r-pp", "data15_13TeV.root",
+        )
+        self.assertEqual(ak.to_list(passed["HLT_e24_lhmedium_L1EM20VH"]), [True])
+        self.assertEqual(ak.to_list(passed["HLT_e60_lhmedium"]), [True])
+        self.assertEqual(ak.to_list(passed["HLT_e120_lhloose"]), [True])
+
+    def test_data_uses_each_event_smk_menu_and_reports_missing_ones(self):
+        payloads = ak.Array([
+            ["""{"chains":{"HLT_e24_lhmedium_L1EM20VH":{"counter":0}}}"""],
+            ["""{"chains":{"HLT_e24_lhmedium_L1EM20VH":{"counter":32}}}"""],
+        ])
+        decoded = FileParser._decode_data_trigger_decisions(
+            self._RootFile(payloads, key=[10, 20]),
+            ak.Array([[1, 0], [0, 1]]), ak.Array([10, 20]),
+            "2024r-pp", "data15_13TeV.root",
+        )
+        self.assertEqual(ak.to_list(decoded["HLT_e24_lhmedium_L1EM20VH"]), [True, True])
+        with self.assertRaisesRegex(RuntimeError, "SMK 99"):
+            FileParser._decode_data_trigger_decisions(
+                self._RootFile(payloads, key=[10, 20]), ak.Array([[1]]), ak.Array([99]),
+                "2024r-pp", "data15_13TeV.root",
+            )
+
+    def test_data_menu_chain_intersection_and_empty_intersection(self):
+        partial = ak.Array([["""{"chains":{"HLT_mu50":{"counter":0}}}"""]])
+        decoded = FileParser._decode_data_trigger_decisions(
+            self._RootFile(partial), ak.Array([[1]]), ak.Array([1]),
+            "2024r-pp", "data15_13TeV.root",
+        )
+        self.assertEqual(ak.to_list(decoded["HLT_mu50"]), [True])
+        empty = ak.Array([["""{"chains":{"HLT_not_configured":{"counter":0}}}"""]])
+        with self.assertRaisesRegex(RuntimeError, "No configured single-lepton chains"):
+            FileParser._decode_data_trigger_decisions(
+                self._RootFile(empty), ak.Array([[1]]), ak.Array([1]),
+                "2024r-pp", "data15_13TeV.root",
+            )
 
 
 if __name__ == "__main__":

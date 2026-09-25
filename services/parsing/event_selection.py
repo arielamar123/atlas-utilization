@@ -107,6 +107,12 @@ def apply_trigger_selection(
 
     trig = events["_triggerPass"]
     chain_defs = schemas.SINGLE_LEPTON_TRIGGER_CHAINS
+    mode = "MC" if release_year.endswith("_mc") else "data"
+    source = (
+        ak.to_list(events["_triggerSource"])[0]
+        if "_triggerSource" in events.fields and len(events)
+        else "unknown"
+    )
 
     if release_year.endswith("_mc"):
         if "_triggerRunNumber" not in events.fields:
@@ -157,19 +163,29 @@ def apply_trigger_selection(
     n_total = len(events)
     n_pass = int(ak.sum(event_mask))
     logger.info(
-        "Trigger selection: %d / %d events pass (%.1f%%), "
+        "Trigger selection (%s, source=%s, years=%s): %d / %d events pass (%.1f%%), "
         "electron-only: %d, muon-only: %d, both: %d",
+        mode, source, [year for year, _mask in trigger_years],
         n_pass, n_total, 100 * n_pass / n_total if n_total else 0,
         int(ak.sum(electron_pass & ~muon_pass)),
         int(ak.sum(muon_pass & ~electron_pass)),
         int(ak.sum(electron_pass & muon_pass)),
     )
+    for chain in trig.fields:
+        logger.debug(
+            "Trigger selection (%s, source=%s): chain %s passed %d / %d events",
+            mode, source, chain, int(ak.sum(ak.fill_none(trig[chain], False))), n_total,
+        )
 
     filtered = events[event_mask]
 
     # Drop trigger-only metadata before particle-level cuts.
     particle_fields = {
         f: filtered[f] for f in filtered.fields
-        if f not in ("_triggerPass", "_triggerRunNumber")
+        if f not in ("_triggerPass", "_triggerRunNumber", "_triggerSource")
     }
+    if not particle_fields:
+        # Useful for trigger-only validation and safe even though ordinary
+        # parser output always includes particle fields.
+        return ak.Array([{} for _ in range(len(filtered))])
     return ak.zip(particle_fields, depth_limit=1)

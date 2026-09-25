@@ -85,7 +85,8 @@ DATA_TRIGGER_MENU_PAYLOAD_BRANCH = "TriggerMenuJson_HLTAux.payload"
 # pick the event's trigger year.  Inclusive run ranges per year.
 RANDOM_RUN_NUMBER_BRANCH = "EventInfoAuxDyn.RandomRunNumber"
 YEAR_RUN_RANGES = {
-    "2015": (276262, 284484),
+    # 266904 is the first 2015 pp run in the 2024 Research Open Data release.
+    "2015": (266904, 284484),
     "2016": (296939, 311481),
 }
 

@@ -98,6 +98,7 @@ class FileParser:
             all_tree_branches,
             release_year,
             enable_trigger_matching=enable_trigger_matching,
+            file_path=file_path,
         )
 
         if not obj_branches:
@@ -128,6 +129,13 @@ class FileParser:
                 release_year,
                 file_path,
                 obj_events.get("_triggerRunNumber"),
+            )
+            obj_events["_triggerSource"] = ak.Array(
+                ["xTrigDecision"] * len(obj_events["_triggerPass"])
+            )
+        elif "_triggerPass" in obj_events:
+            obj_events["_triggerSource"] = ak.Array(
+                ["AnalysisTrigMatch"] * len(obj_events["_triggerPass"])
             )
         obj_events = FileParser._split_combined_leptons(obj_events, release_year)
         if enable_jet_tagging:
@@ -231,6 +239,7 @@ class FileParser:
         tree_branches: set[str],
         release_year: str,
         enable_trigger_matching: bool = False,
+        file_path: str = "",
     ) -> dict[str, dict[str, str]]:
         """
         Extract branches by object based on release-specific schema.
@@ -280,9 +289,19 @@ class FileParser:
             # selection. Do not read or materialize them when that selection is
             # disabled: they are large and their layout varies between releases.
             is_mc = release_year.endswith("_mc")
+            configured_chains = {
+                chain
+                for year in schemas.get_trigger_years(release_year, file_path)
+                for particles in (schemas.SINGLE_LEPTON_TRIGGER_CHAINS[year],)
+                for chains in particles.values()
+                for chain in chains
+            }
             available_trigger = [
                 branch for branch in schemas.get_all_trigger_branches()
                 if branch in tree_branches
+                and branch.removeprefix("AnalysisTrigMatch_").removesuffix(
+                    schemas.TRIGGER_BRANCH_SUFFIX
+                ) in configured_chains
             ]
             if available_trigger:
                 obj_branches["_triggerMatch"] = {branch: branch for branch in available_trigger}
@@ -679,18 +698,25 @@ class FileParser:
             ) from exc
 
         years = schemas.get_trigger_years(release_year, file_path)
-        if len(years) != 1 and event_run_numbers is not None:
-            run_years = set()
+        run_years = set()
+        if event_run_numbers is not None:
             for run_number in ak.to_list(event_run_numbers):
                 for year, (lower, upper) in schemas.YEAR_RUN_RANGES.items():
                     if lower <= int(run_number) <= upper:
                         run_years.add(year)
                         break
+        if len(years) != 1 and run_years:
             years = sorted(run_years)
         if len(years) != 1:
             raise ValueError(
                 f"Data file {file_path} did not resolve to exactly one trigger year: {years}"
             )
+        if event_run_numbers is not None:
+            if not run_years or run_years != {years[0]}:
+                raise RuntimeError(
+                    f"Data runNumber validation failed for {file_path}: resolved year "
+                    f"{years[0]}, run-number years {sorted(run_years)}"
+                )
 
         def scalar(value):
             while isinstance(value, (list, tuple)) and len(value) == 1:

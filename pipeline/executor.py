@@ -21,6 +21,7 @@ import os
 import re
 import sqlite3
 import subprocess
+from contextlib import closing
 from pathlib import Path
 from typing import Optional
 
@@ -474,7 +475,7 @@ class PipelineExecutor:
 
             for sf in sqlite_files:
                 # Aggregate n_entries per signature directly from metadata column.
-                with sqlite3.connect(str(sf)) as conn:
+                with closing(sqlite3.connect(str(sf))) as conn:
                     rows = conn.execute(
                         """
                         SELECT signature, COALESCE(SUM(n_entries), 0) AS entries
