@@ -37,6 +37,9 @@ class TriggerParsingTests(unittest.TestCase):
         tree_branches = {
             trigger_branch,
             schemas.RANDOM_RUN_NUMBER_BRANCH,
+            schemas.DATA_TRIGGER_DECISION_BRANCH,
+            schemas.DATA_TRIGGER_SMK_BRANCH,
+            schemas.DATA_RUN_NUMBER_BRANCH,
         }
 
         result = FileParser._extract_branches_by_schema(
@@ -46,7 +49,9 @@ class TriggerParsingTests(unittest.TestCase):
         )
 
         self.assertNotIn("_triggerMatch", result)
-        self.assertNotIn("_runNumber", result)
+        self.assertNotIn("_triggerRunNumber", result)
+        self.assertNotIn("_triggerDecision", result)
+        self.assertNotIn("_triggerSmk", result)
 
     def test_trigger_metadata_is_requested_when_enabled(self):
         trigger_branch = schemas.get_all_trigger_branches()[0]
