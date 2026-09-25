@@ -42,57 +42,30 @@ NANOAOD_BTAGGING_OBJECTS = [
 # ---------------------------------------------------------------------------
 # Single-lepton trigger chains per data-taking year (Run 2).
 #
-# For each year the list gives the ``AnalysisTrigMatch_HLT_*`` branch stems
-# present in the ATLAS Open Data PHYSLITE files.  An event passes the
-# trigger requirement when *any* offline electron (muon) has a non-empty
-# match to *any* electron (muon) chain — the chains within a year are OR'd.
-#
-# MC samples produced for the full Run-2 period ("mc20") should use the
-# union of all years.
+# Chain names are canonical HLT names.  The MC source adapter alone turns
+# them into ``AnalysisTrigMatch_*AuxDyn.TrigMatchedObjects`` branch names.
 # ---------------------------------------------------------------------------
 SINGLE_LEPTON_TRIGGER_CHAINS = {
     "2015": {
         "Electrons": [
-            "AnalysisTrigMatch_HLT_e24_lhmedium_iloose_L1EM20VH",
-            "AnalysisTrigMatch_HLT_e60_lhmedium",
-            "AnalysisTrigMatch_HLT_e120_lhloose",
+            "HLT_e24_lhmedium_L1EM20VH",
+            "HLT_e60_lhmedium",
+            "HLT_e120_lhloose",
         ],
         "Muons": [
-            "AnalysisTrigMatch_HLT_mu20_iloose_L1MU15",
-            "AnalysisTrigMatch_HLT_mu50",
+            "HLT_mu20_iloose_L1MU15",
+            "HLT_mu50",
         ],
     },
     "2016": {
         "Electrons": [
-            "AnalysisTrigMatch_HLT_e26_lhtight_nod0_ivarloose",
-            "AnalysisTrigMatch_HLT_e60_lhmedium_nod0",
-            "AnalysisTrigMatch_HLT_e140_lhloose_nod0",
+            "HLT_e26_lhtight_nod0_ivarloose",
+            "HLT_e60_lhmedium_nod0",
+            "HLT_e140_lhloose_nod0",
         ],
         "Muons": [
-            "AnalysisTrigMatch_HLT_mu26_ivarmedium",
-            "AnalysisTrigMatch_HLT_mu50",
-        ],
-    },
-    "2017": {
-        "Electrons": [
-            "AnalysisTrigMatch_HLT_e26_lhtight_nod0_ivarloose",
-            "AnalysisTrigMatch_HLT_e60_lhmedium_nod0",
-            "AnalysisTrigMatch_HLT_e140_lhloose_nod0",
-        ],
-        "Muons": [
-            "AnalysisTrigMatch_HLT_mu26_ivarmedium",
-            "AnalysisTrigMatch_HLT_mu50",
-        ],
-    },
-    "2018": {
-        "Electrons": [
-            "AnalysisTrigMatch_HLT_e26_lhtight_nod0_ivarloose",
-            "AnalysisTrigMatch_HLT_e60_lhmedium_nod0",
-            "AnalysisTrigMatch_HLT_e140_lhloose_nod0",
-        ],
-        "Muons": [
-            "AnalysisTrigMatch_HLT_mu26_ivarmedium",
-            "AnalysisTrigMatch_HLT_mu50",
+            "HLT_mu26_ivarmedium",
+            "HLT_mu50",
         ],
     },
 }
@@ -100,14 +73,13 @@ SINGLE_LEPTON_TRIGGER_CHAINS = {
 
 TRIGGER_BRANCH_SUFFIX = "AuxDyn.TrigMatchedObjects"
 
-# Data PHYSLITE files do not contain the MC-only ``TrigMatchedObjects``
-# ElementLink decorations.  They store the event trigger decision in this
-# serialisable xAOD auxiliary vector; the associated HLT menu JSON is in the
-# MetaData tree and maps each HLT chain to a one-based bit counter.
-DATA_TRIGGER_DECISION_BRANCH = "xTrigDecisionAux./xTrigDecisionAux.tav"
-DATA_TRIGGER_MENU_PAYLOAD_BRANCH = (
-    "TriggerMenuJson_HLTAux./TriggerMenuJson_HLTAux.payload"
-)
+# Event-level data HLT decision and SMK branches.  ROOT split branch spelling
+# varies, so FileParser resolves these canonical suffixes against each file.
+DATA_TRIGGER_DECISION_BRANCH = "xTrigDecisionAux.efPassedPhysics"
+DATA_TRIGGER_SMK_BRANCH = "xTrigDecisionAux.smk"
+DATA_RUN_NUMBER_BRANCH = "EventInfoAuxDyn.runNumber"
+DATA_TRIGGER_MENU_KEY_BRANCH = "TriggerMenuJson_HLTAux.key"
+DATA_TRIGGER_MENU_PAYLOAD_BRANCH = "TriggerMenuJson_HLTAux.payload"
 
 # MC: the data-taking run each event simulates (pileup reweighting), used to
 # pick the event's trigger year.  Inclusive run ranges per year.
@@ -115,14 +87,12 @@ RANDOM_RUN_NUMBER_BRANCH = "EventInfoAuxDyn.RandomRunNumber"
 YEAR_RUN_RANGES = {
     "2015": (276262, 284484),
     "2016": (296939, 311481),
-    "2017": (324320, 341649),
-    "2018": (348197, 364292),
 }
 
 
 RELEASE_TRIGGER_YEARS = {
-    "2024r-pp": ["2015", "2016", "2017", "2018"],  # Run-2 PHYSLITE
-    "2024r-pp_mc": ["2015", "2016", "2017", "2018"],
+    "2024r-pp": ["2015", "2016"],
+    "2024r-pp_mc": ["2015", "2016"],
 }
 
 
@@ -139,7 +109,7 @@ def get_all_trigger_branches() -> list[str]:
         for chains in year_chains.values()
         for stem in chains
     }
-    return sorted(stem + TRIGGER_BRANCH_SUFFIX for stem in stems)
+    return sorted("AnalysisTrigMatch_" + stem + TRIGGER_BRANCH_SUFFIX for stem in stems)
 
 # Mapping from specific record IDs to their release year/schema identifier
 # This will be populated when schemas are extracted from record IDs

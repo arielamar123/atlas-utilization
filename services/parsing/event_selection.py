@@ -94,35 +94,39 @@ def apply_trigger_selection(
     release_year: str = "2024r-pp",
     file_path: str = "",
 ) -> ak.Array:
-    """
-    Keep only events where at least one lepton fired a single-lepton trigger.
+    """Keep only events passing a configured single-lepton trigger.
 
-    The ``_triggerMatch`` field (if present) is a record of per-event booleans,
-    one per trigger chain.  An event passes if ANY electron chain OR ANY muon
-    chain is True.
-
-    Returns the filtered events array (``_triggerMatch`` field is dropped
-    from the output to avoid downstream issues with non-particle fields).
+    ``_triggerPass`` contains per-chain event booleans.  It comes from genuine
+    MC object matching or, for data fallback, HLT decision bits.  It does not
+    restrict the offline leptons that later particle cuts may retain.
     """
     logger = logging.getLogger(__name__)
 
-    if "_triggerMatch" not in events.fields:
-        logger.warning(
-            "Skipping file %s: no trigger-match branches on file (%d events dropped)",
-            file_path, len(events),
-        )
-        return events[:0]
+    if "_triggerPass" not in events.fields:
+        raise RuntimeError(f"Trigger selection enabled but no usable trigger source in {file_path}")
 
-    trig = events["_triggerMatch"]
+    trig = events["_triggerPass"]
     chain_defs = schemas.SINGLE_LEPTON_TRIGGER_CHAINS
 
-    if "_runNumber" in events.fields:
+    if release_year.endswith("_mc"):
+        if "_triggerRunNumber" not in events.fields:
+            raise RuntimeError(
+                f"MC trigger selection requires EventInfoAuxDyn.RandomRunNumber in {file_path}"
+            )
         # MC: each event's trigger year is set by its random run number
-        rrn = events["_runNumber"]
+        rrn = events["_triggerRunNumber"]
         trigger_years = [
             (year, (rrn >= lo) & (rrn <= hi))
             for year, (lo, hi) in schemas.YEAR_RUN_RANGES.items()
         ]
+        valid = ak.zeros_like(rrn, dtype=bool)
+        for _year, mask in trigger_years:
+            valid = valid | mask
+        if not bool(ak.all(valid)):
+            raise RuntimeError(
+                f"MC trigger selection found missing or unsupported RandomRunNumber in "
+                f"{file_path}: {ak.to_list(rrn[~valid])[:5]}"
+            )
     else:
         # Data: the file's year applies to every event
         trigger_years = [
@@ -140,13 +144,11 @@ def apply_trigger_selection(
             )
         year_chains = chain_defs[year]
         for chain in year_chains.get("Electrons", []):
-            full_branch = chain + schemas.TRIGGER_BRANCH_SUFFIX
-            if full_branch in trig.fields:
-                electron_pass = electron_pass | (in_year & trig[full_branch])
+            if chain in trig.fields:
+                electron_pass = electron_pass | (in_year & ak.fill_none(trig[chain], False))
         for chain in year_chains.get("Muons", []):
-            full_branch = chain + schemas.TRIGGER_BRANCH_SUFFIX
-            if full_branch in trig.fields:
-                muon_pass = muon_pass | (in_year & trig[full_branch])
+            if chain in trig.fields:
+                muon_pass = muon_pass | (in_year & ak.fill_none(trig[chain], False))
 
     # Event passes if any lepton trigger fired
     event_mask = electron_pass | muon_pass
@@ -156,15 +158,18 @@ def apply_trigger_selection(
     n_pass = int(ak.sum(event_mask))
     logger.info(
         "Trigger selection: %d / %d events pass (%.1f%%), "
-        "electron-only: %d, muon-only: %d",
+        "electron-only: %d, muon-only: %d, both: %d",
         n_pass, n_total, 100 * n_pass / n_total if n_total else 0,
         int(ak.sum(electron_pass & ~muon_pass)),
         int(ak.sum(muon_pass & ~electron_pass)),
+        int(ak.sum(electron_pass & muon_pass)),
     )
 
     filtered = events[event_mask]
 
-    # Drop _triggerMatch from the output — it's event-level metadata that
-    # would cause axis errors in downstream particle-level operations
-    particle_fields = {f: filtered[f] for f in filtered.fields if f not in ("_triggerMatch", "_runNumber")}
+    # Drop trigger-only metadata before particle-level cuts.
+    particle_fields = {
+        f: filtered[f] for f in filtered.fields
+        if f not in ("_triggerPass", "_triggerRunNumber")
+    }
     return ak.zip(particle_fields, depth_limit=1)

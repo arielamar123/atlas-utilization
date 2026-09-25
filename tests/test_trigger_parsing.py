@@ -18,8 +18,10 @@ class TriggerParsingTests(unittest.TestCase):
             return self.values
 
     class _RootFile:
-        def __init__(self, payload):
+        def __init__(self, payload, key=1):
             self.metadata = {
+                schemas.DATA_TRIGGER_MENU_KEY_BRANCH:
+                    TriggerParsingTests._MetadataBranch(ak.Array([[key]])),
                 schemas.DATA_TRIGGER_MENU_PAYLOAD_BRANCH:
                     TriggerParsingTests._MetadataBranch(payload)
             }
@@ -59,11 +61,11 @@ class TriggerParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(result["_triggerMatch"], {trigger_branch: trigger_branch})
-        self.assertIn("_runNumber", result)
+        self.assertIn("_triggerRunNumber", result)
 
     def test_data_trigger_decision_is_requested_when_no_mc_match_branch_exists(self):
         result = FileParser._extract_branches_by_schema(
-            {schemas.DATA_TRIGGER_DECISION_BRANCH},
+            {schemas.DATA_TRIGGER_DECISION_BRANCH, schemas.DATA_TRIGGER_SMK_BRANCH},
             "2024r-pp",
             enable_trigger_matching=True,
         )
@@ -107,17 +109,11 @@ class TriggerParsingTests(unittest.TestCase):
         self.assertEqual(ak.to_list(result), [True, False, True])
 
     def test_open_data_uses_the_year_in_the_data_file_path(self):
-        electron_2015 = (
-            "AnalysisTrigMatch_HLT_e24_lhmedium_iloose_L1EM20VH"
-            + schemas.TRIGGER_BRANCH_SUFFIX
-        )
-        electron_2016 = (
-            "AnalysisTrigMatch_HLT_e26_lhtight_nod0_ivarloose"
-            + schemas.TRIGGER_BRANCH_SUFFIX
-        )
+        electron_2015 = "HLT_e24_lhmedium_L1EM20VH"
+        electron_2016 = "HLT_e26_lhtight_nod0_ivarloose"
         events = ak.zip({
             "event": [0, 1],
-            "_triggerMatch": ak.zip({
+            "_triggerPass": ak.zip({
                 electron_2015: [True, False],
                 electron_2016: [False, True],
             }),
@@ -130,50 +126,42 @@ class TriggerParsingTests(unittest.TestCase):
         )
 
         self.assertEqual(ak.to_list(selected["event"]), [0])
-        self.assertNotIn("_triggerMatch", selected.fields)
+        self.assertNotIn("_triggerPass", selected.fields)
 
-    def test_open_data_tav_bits_use_the_embedded_menu_and_data_year(self):
-        # HLT menu counters are one-based: counter 48 lives in word 1, bit 15.
+    def test_open_data_hlt_bits_use_the_embedded_menu_and_data_year(self):
+        # Counter 47 lives in word 1, bit 15; counters are already zero-based.
         payload = ak.Array([["""{
             \"chains\": {
-                \"HLT_e24_lhmedium_iloose_L1EM20VH\": {\"counter\": \"48\"},
+                \"HLT_e24_lhmedium_L1EM20VH\": {\"counter\": \"47\"},
                 \"HLT_e60_lhmedium\": {\"counter\": \"40\"},
                 \"HLT_e120_lhloose\": {\"counter\": \"58\"},
                 \"HLT_mu20_iloose_L1MU15\": {\"counter\": \"243\"},
                 \"HLT_mu50\": {\"counter\": \"239\"}
             }
         }"""]])
-        tav = ak.Array([
+        ef_passed_physics = ak.Array([
             [0, 1 << 15, 0, 0, 0, 0, 0, 0],
             [0, 0, 0, 0, 0, 0, 0, 0],
         ])
 
         trigger_match = FileParser._decode_data_trigger_decisions(
             self._RootFile(payload),
-            tav,
+            ef_passed_physics,
+            ak.Array([1, 1]),
             "2024r-pp",
             "root://example.org/data15_13TeV/DAOD_PHYSLITE.root",
         )
-        branch = (
-            "AnalysisTrigMatch_HLT_e24_lhmedium_iloose_L1EM20VH"
-            + schemas.TRIGGER_BRANCH_SUFFIX
-        )
+        branch = "HLT_e24_lhmedium_L1EM20VH"
 
         self.assertEqual(ak.to_list(trigger_match[branch]), [True, False])
 
     def test_mc_uses_each_event_random_run_number(self):
-        electron_2015 = (
-            "AnalysisTrigMatch_HLT_e24_lhmedium_iloose_L1EM20VH"
-            + schemas.TRIGGER_BRANCH_SUFFIX
-        )
-        electron_2016 = (
-            "AnalysisTrigMatch_HLT_e26_lhtight_nod0_ivarloose"
-            + schemas.TRIGGER_BRANCH_SUFFIX
-        )
+        electron_2015 = "HLT_e24_lhmedium_L1EM20VH"
+        electron_2016 = "HLT_e26_lhtight_nod0_ivarloose"
         events = ak.zip({
             "event": [0, 1, 2],
-            "_runNumber": [280000, 300000, 300000],
-            "_triggerMatch": ak.zip({
+            "_triggerRunNumber": [280000, 300000, 300000],
+            "_triggerPass": ak.zip({
                 electron_2015: [True, True, False],
                 electron_2016: [False, False, True],
             }),
@@ -182,7 +170,7 @@ class TriggerParsingTests(unittest.TestCase):
         selected = apply_trigger_selection(events, release_year="2024r-pp_mc")
 
         self.assertEqual(ak.to_list(selected["event"]), [0, 2])
-        self.assertNotIn("_runNumber", selected.fields)
+        self.assertNotIn("_triggerRunNumber", selected.fields)
 
 
 if __name__ == "__main__":

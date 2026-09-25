@@ -54,8 +54,8 @@ tasks:
   do_histogram_creation: true
 
 # ===SINGLE-LEPTON TRIGGER SELECTION==========================================
-# When enabled, events must have at least one offline-quality lepton
-# (surviving kinematic and isolation cuts) that is trigger-matched.
+# When enabled, events must pass an event-level single-lepton trigger.  The
+# triggering offline lepton need not survive the later kinematic/isolation cuts.
 trigger_config:
   enabled: false
 

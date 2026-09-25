@@ -119,11 +119,15 @@ class FileParser:
             batch_size
         )
         if "_triggerDecision" in obj_events:
-            obj_events["_triggerMatch"] = FileParser._decode_data_trigger_decisions(
+            # Data fallback only: genuine AnalysisTrigMatch data, when present,
+            # was selected by the source adapter and is never overwritten.
+            obj_events["_triggerPass"] = FileParser._decode_data_trigger_decisions(
                 root_file,
                 obj_events.pop("_triggerDecision"),
+                obj_events.pop("_triggerSmk"),
                 release_year,
                 file_path,
+                obj_events.get("_triggerRunNumber"),
             )
         obj_events = FileParser._split_combined_leptons(obj_events, release_year)
         if enable_jet_tagging:
@@ -275,23 +279,46 @@ class FileParser:
             # Trigger matching branches are metadata used only by trigger
             # selection. Do not read or materialize them when that selection is
             # disabled: they are large and their layout varies between releases.
-            trigger_branches = schemas.get_all_trigger_branches()
-            available_trigger = [b for b in trigger_branches if b in tree_branches]
+            is_mc = release_year.endswith("_mc")
+            available_trigger = [
+                branch for branch in schemas.get_all_trigger_branches()
+                if branch in tree_branches
+            ]
             if available_trigger:
-                obj_branches["_triggerMatch"] = {b: b for b in available_trigger}
-            # MC only: the random run number picks each event's trigger year.
-            if schemas.RANDOM_RUN_NUMBER_BRANCH in tree_branches:
-                obj_branches["_runNumber"] = {
-                    schemas.RANDOM_RUN_NUMBER_BRANCH: "_runNumber"
-                }
-            elif schemas.DATA_TRIGGER_DECISION_BRANCH in tree_branches:
-                # Data stores trigger decisions in a packed bit vector.  The
-                # file's embedded HLT menu maps its bits to chain names.
-                obj_branches["_triggerDecision"] = {
-                    schemas.DATA_TRIGGER_DECISION_BRANCH: "_triggerDecision"
-                }
+                obj_branches["_triggerMatch"] = {branch: branch for branch in available_trigger}
+
+            if is_mc:
+                # MC must use matching information plus its per-event simulated
+                # run number; never infer this mode from a branch's presence.
+                if schemas.RANDOM_RUN_NUMBER_BRANCH in tree_branches:
+                    obj_branches["_triggerRunNumber"] = {
+                        schemas.RANDOM_RUN_NUMBER_BRANCH: "_triggerRunNumber"
+                    }
+            elif not available_trigger:
+                decision = FileParser._find_split_branch(
+                    tree_branches, schemas.DATA_TRIGGER_DECISION_BRANCH
+                )
+                smk = FileParser._find_split_branch(
+                    tree_branches, schemas.DATA_TRIGGER_SMK_BRANCH
+                )
+                if decision and smk:
+                    obj_branches["_triggerDecision"] = {decision: "_triggerDecision"}
+                    obj_branches["_triggerSmk"] = {smk: "_triggerSmk"}
+                run_number = FileParser._find_split_branch(
+                    tree_branches, schemas.DATA_RUN_NUMBER_BRANCH
+                )
+                if run_number:
+                    obj_branches["_triggerRunNumber"] = {run_number: "_triggerRunNumber"}
 
         return obj_branches
+
+    @staticmethod
+    def _find_split_branch(tree_branches: set[str], canonical: str) -> Optional[str]:
+        """Return a ROOT split-branch spelling that ends in *canonical*."""
+        if canonical in tree_branches:
+            return canonical
+        matches = sorted(branch for branch in tree_branches if branch.endswith(canonical))
+        return matches[0] if matches else None
     
     @staticmethod
     def _prepare_obj_branch_name(
@@ -506,7 +533,10 @@ class FileParser:
                 bp: qty for bp, qty in branch_mapping.items()
                 if bp in accessible_set
             }
-            if obj_name in ("DirectObjects", "_triggerMatch", "_runNumber", "_triggerDecision"):
+            if obj_name in (
+                "DirectObjects", "_triggerMatch", "_triggerRunNumber",
+                "_triggerDecision", "_triggerSmk",
+            ):
                 # These are not particle types — skip the inv-mass field check.
                 if accessible_branches:
                     accessible_obj_branches[obj_name] = accessible_branches
@@ -577,17 +607,23 @@ class FileParser:
                         if full_branch not in concatenated.fields:
                             continue
                         raw = concatenated[full_branch]
-                        trig_fields[full_branch] = (
+                        chain = full_branch.removeprefix("AnalysisTrigMatch_").removesuffix(
+                            schemas.TRIGGER_BRANCH_SUFFIX
+                        )
+                        trig_fields[chain] = (
                             FileParser._collapse_trigger_matches(raw)
                         )
                     if trig_fields:
-                        result[obj_name] = ak.zip(trig_fields)
-                elif obj_name == "_runNumber":
-                    result[obj_name] = concatenated[schemas.RANDOM_RUN_NUMBER_BRANCH]
+                        result["_triggerPass"] = ak.zip(trig_fields)
+                elif obj_name == "_triggerRunNumber":
+                    full_branch = next(iter(obj_branches[obj_name]))
+                    result[obj_name] = concatenated[full_branch]
                 elif obj_name == "_triggerDecision":
-                    result[obj_name] = concatenated[
-                        schemas.DATA_TRIGGER_DECISION_BRANCH
-                    ]
+                    full_branch = next(iter(obj_branches[obj_name]))
+                    result[obj_name] = concatenated[full_branch]
+                elif obj_name == "_triggerSmk":
+                    full_branch = next(iter(obj_branches[obj_name]))
+                    result[obj_name] = concatenated[full_branch]
                 else:
                     result[obj_name] = ak.zip({
                         quantity: concatenated[full_branch]
@@ -615,54 +651,108 @@ class FileParser:
     @staticmethod
     def _decode_data_trigger_decisions(
         root_file,
-        tav: ak.Array,
+        ef_passed_physics: ak.Array,
+        event_smks: ak.Array,
         release_year: str,
         file_path: str,
+        event_run_numbers: Optional[ak.Array] = None,
     ) -> ak.Array:
-        """Decode data-file HLT decision bits using its embedded menu JSON.
-
-        Unlike MC, 2024 Run-2 Open Data does not persist the
-        ``AuxDyn.TrigMatchedObjects`` ElementLink decorations.  Its
-        ``xTrigDecisionAux.tav`` vector carries one bit per HLT chain; menu
-        counters in ``MetaData/TriggerMenuJson_HLT`` are one-based.
-        """
+        """Decode xTrigDecision *HLT* bits using the menu for each event SMK."""
         try:
             metadata = root_file["MetaData"]
-            payloads = metadata[schemas.DATA_TRIGGER_MENU_PAYLOAD_BRANCH].array(
-                library="ak"
+            metadata_names = {str(name).split(";")[0] for name in metadata.keys()}
+            key_branch = FileParser._find_split_branch(
+                metadata_names, schemas.DATA_TRIGGER_MENU_KEY_BRANCH
             )
-            payload = ak.to_list(payloads)[0][0]
-            menu = json.loads(payload)
+            payload_branch = FileParser._find_split_branch(
+                metadata_names, schemas.DATA_TRIGGER_MENU_PAYLOAD_BRANCH
+            )
+            if not key_branch or not payload_branch:
+                raise KeyError(
+                    f"missing menu key/payload branches; found {sorted(metadata_names)}"
+                )
+            keys = ak.to_list(metadata[key_branch].array(library="ak"))
+            payloads = ak.to_list(metadata[payload_branch].array(library="ak"))
         except Exception as exc:
             raise RuntimeError(
-                f"Could not read the embedded HLT menu for data file {file_path}"
+                f"Could not read TriggerMenuJson_HLT key/payload metadata for data file {file_path}"
             ) from exc
 
         years = schemas.get_trigger_years(release_year, file_path)
+        if len(years) != 1 and event_run_numbers is not None:
+            run_years = set()
+            for run_number in ak.to_list(event_run_numbers):
+                for year, (lower, upper) in schemas.YEAR_RUN_RANGES.items():
+                    if lower <= int(run_number) <= upper:
+                        run_years.add(year)
+                        break
+            years = sorted(run_years)
         if len(years) != 1:
             raise ValueError(
                 f"Data file {file_path} did not resolve to exactly one trigger year: {years}"
             )
 
-        fields = {}
-        for particle_chains in schemas.SINGLE_LEPTON_TRIGGER_CHAINS[years[0]].values():
-            for stem in particle_chains:
-                hlt_name = stem.removeprefix("AnalysisTrigMatch_")
-                chain = menu["chains"].get(hlt_name)
-                if chain is None:
-                    logging.warning("HLT chain %s is absent from %s", hlt_name, file_path)
-                    continue
-                bit = int(chain["counter"]) - 1
-                word = bit // 32
-                words = ak.pad_none(tav, word + 1, axis=1, clip=True)
-                value = ak.fill_none(words[:, word], 0)
-                fields[stem + schemas.TRIGGER_BRANCH_SUFFIX] = (
-                    (value >> np.uint32(bit % 32)) & np.uint32(1)
-                ) == 1
+        def scalar(value):
+            while isinstance(value, (list, tuple)) and len(value) == 1:
+                value = value[0]
+            if isinstance(value, bytes):
+                return value.decode()
+            return value
 
-        if not fields:
-            raise RuntimeError(f"No configured single-lepton HLT chains found in {file_path}")
-        return ak.zip(fields)
+        menus = {}
+        for key, payload in zip(keys, payloads):
+            key, payload = scalar(key), scalar(payload)
+            try:
+                menus[int(key)] = json.loads(payload)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"Invalid TriggerMenuJson_HLT entry in {file_path}: key={key!r}"
+                ) from exc
+
+        configured = [
+            chain for kinds in schemas.SINGLE_LEPTON_TRIGGER_CHAINS[years[0]].values()
+            for chain in kinds
+        ]
+        smks = [int(scalar(value)) for value in ak.to_list(event_smks)]
+        decisions = ak.to_list(ef_passed_physics)
+        values = {chain: [] for chain in configured}
+        available_by_smk = {}
+        for index, (smk, words) in enumerate(zip(smks, decisions)):
+            menu = menus.get(smk)
+            if menu is None:
+                raise RuntimeError(
+                    f"No HLT menu payload for event SMK {smk} in {file_path}; "
+                    f"available menu keys: {sorted(menus)}"
+                )
+            chains = menu.get("chains", {})
+            available = [chain for chain in configured if chain in chains]
+            available_by_smk[smk] = available
+            if not available:
+                raise RuntimeError(
+                    f"No configured single-lepton chains for file={file_path}, year={years[0]}, "
+                    f"SMK={smk}; configured={configured}; menu chains={sorted(chains)[:30]}"
+                )
+            words = words or []
+            for chain in configured:
+                spec = chains.get(chain)
+                if spec is None:
+                    values[chain].append(False)
+                    continue
+                counter = int(spec["counter"])
+                word_index, bit_index = divmod(counter, 32)
+                if word_index >= len(words):
+                    raise RuntimeError(
+                        f"HLT decision vector incompatible with menu in {file_path}: "
+                        f"event={index}, SMK={smk}, chain={chain}, counter={counter}, "
+                        f"word_index={word_index}, words={len(words)}"
+                    )
+                values[chain].append(((int(words[word_index]) >> bit_index) & 1) != 0)
+
+        logging.info(
+            "Data trigger fallback %s: SMKs=%s menu_keys=%s available=%s",
+            file_path, sorted(set(smks)), sorted(menus), available_by_smk,
+        )
+        return ak.zip({chain: ak.Array(passes) for chain, passes in values.items()})
     
     @staticmethod
     def _auto_detect_branches(tree_branches: set[str]) -> dict[str, dict[str, str]]:

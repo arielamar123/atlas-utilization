@@ -217,8 +217,8 @@ class ParsingHandler(StateHandler):
                 on_error=on_error
             ):
 
-                # Apply single-lepton trigger matching if enabled,
-                # and always strip _triggerMatch before kinematic cuts
+                # Apply the event-level trigger requirement before the normal
+                # particle cuts; the trigger lepton is not selected as an object.
                 if enable_trigger_matching:
                     filtered = apply_trigger_selection(
                         batch.events,
@@ -238,9 +238,9 @@ class ParsingHandler(StateHandler):
                         event_count=len(filtered),
                         processing_time_sec=batch.processing_time_sec,
                     )
-                elif "_triggerMatch" in batch.events.fields or "_runNumber" in batch.events.fields:
+                elif "_triggerPass" in batch.events.fields or "_triggerRunNumber" in batch.events.fields:
                     # Strip trigger fields even when not filtering
-                    clean = {f: batch.events[f] for f in batch.events.fields if f not in ("_triggerMatch", "_runNumber")}
+                    clean = {f: batch.events[f] for f in batch.events.fields if f not in ("_triggerPass", "_triggerRunNumber")}
                     cleaned_events = ak.zip(clean, depth_limit=1)
                     batch = EventBatch(
                         events=cleaned_events,

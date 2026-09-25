@@ -482,6 +482,18 @@ class PipelineExecutor:
                         GROUP BY signature
                         """
                     ).fetchall()
+                    has_final_state_counts = conn.execute(
+                        """
+                        SELECT 1 FROM sqlite_master
+                        WHERE type = 'table' AND name = 'final_state_counts'
+                        """
+                    ).fetchone()
+                    exact_final_state_rows = []
+                    if has_final_state_counts:
+                        exact_final_state_rows = conn.execute(
+                            "SELECT final_state, COALESCE(SUM(n_events), 0) "
+                            "FROM final_state_counts GROUP BY final_state"
+                        ).fetchall()
                     has_metadata = conn.execute(
                         """
                         SELECT 1 FROM sqlite_master
@@ -503,6 +515,13 @@ class PipelineExecutor:
                                     f"Invalid mass calculation timing in {sf}: {timing_row[0]!r}"
                                 )
 
+                # New SQLite shards contain the authoritative event population.
+                # Legacy shards reconstruct a non-multiplicative estimate: the
+                # largest IM-channel population for each final state per shard.
+                legacy_fs_entries = {}
+                for final_state, n_events in exact_final_state_rows:
+                    fs_events[final_state] = fs_events.get(final_state, 0) + int(n_events or 0)
+
                 total_signatures += len(rows)
                 for signature, entries in rows:
                     entries = int(entries or 0)
@@ -516,7 +535,10 @@ class PipelineExecutor:
 
                     fs_str, im_str = match.groups()
                     unique_fs.add(fs_str)
-                    fs_events[fs_str] = fs_events.get(fs_str, 0) + entries
+                    if not has_final_state_counts:
+                        legacy_fs_entries[fs_str] = max(
+                            legacy_fs_entries.get(fs_str, 0), entries
+                        )
                     channel = (fs_str, im_str)
 
                     if channel not in unique_channels:
@@ -536,10 +558,13 @@ class PipelineExecutor:
                                 combos_per_object[pname] = combos_per_object.get(pname, 0) + 1
                         combo_sizes[len(involved_types)] = combo_sizes.get(len(involved_types), 0) + 1
 
+                for final_state, entries in legacy_fs_entries.items():
+                    fs_events[final_state] = fs_events.get(final_state, 0) + entries
+
             return {
                 'total_final_states': len(unique_fs),
                 'total_combinations': len(unique_channels),
-                'total_events_processed': total_mass_values,
+                'total_events_processed': sum(fs_events.values()),
                 'combinations_per_object': combos_per_object,
                 'combination_size_distribution': combo_sizes,
                 'events_per_final_state': fs_events,
@@ -580,8 +605,10 @@ class PipelineExecutor:
                 unique_fs.add(fs_str)
                 channel = (fs_str, im_str)
 
-                # --- Aggregate events per final state ---
-                fs_events[fs_str] = fs_events.get(fs_str, 0) + n_entries
+                # Legacy NPY output has no exact event table.  Keep the largest
+                # channel population per final state rather than multiplying
+                # events by the number of invariant-mass combinations.
+                fs_events[fs_str] = max(fs_events.get(fs_str, 0), n_entries)
 
                 if channel not in unique_channels:
                     unique_channels.add(channel)
@@ -609,7 +636,7 @@ class PipelineExecutor:
         return {
             'total_final_states': len(unique_fs),
             'total_combinations': len(unique_channels),
-            'total_events_processed': total_mass_values,
+            'total_events_processed': sum(fs_events.values()),
             'combinations_per_object': combos_per_object,
             'combination_size_distribution': combo_sizes,
             'events_per_final_state': fs_events,
