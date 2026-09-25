@@ -61,6 +61,11 @@ class ParsingConfig:
     # Optional selection (from YAML): applied after reading each file, before chunking
     particle_counts: Optional[dict] = None
     kinematic_cuts: Optional[dict] = None
+    # Physics objects persisted after event selection.  The parser still reads
+    # all recognized physics objects so excluded objects can veto an event.
+    objects_to_store: tuple[str, ...] = (
+        "Electrons", "Muons", "Jets", "BJets", "Photons", "Taus"
+    )
     
     def __post_init__(self):
         """Validate parsing configuration."""
@@ -83,6 +88,24 @@ class ParsingConfig:
         if self.enable_jet_tagging and not self.jet_btagging_thresholds:
             # TODO add algorithm-specific validation
             raise ValueError("jet_btagging_thresholds must be specified when enable_jet_tagging is set")
+        if not self.objects_to_store:
+            raise ValueError("objects_to_store cannot be empty")
+        if self.particle_counts:
+            # Keep this local rather than importing the parsing service into
+            # the domain layer.  YAML accepts lower-case plural names.
+            yaml_names = {
+                "electrons": "Electrons", "muons": "Muons", "jets": "Jets",
+                "bjets": "BJets", "photons": "Photons", "taus": "Taus",
+            }
+            excluded = sorted(
+                str(key) for key in self.particle_counts
+                if yaml_names.get(str(key).lower(), key) not in self.objects_to_store
+            )
+            if excluded:
+                raise ValueError(
+                    "particle_counts may only contain objects listed in "
+                    f"objects_to_calculate; excluded keys: {excluded}"
+                )
 
 
 @dataclass(frozen=True)
@@ -103,13 +126,13 @@ class MassCalculationConfig:
     objects_to_calculate: tuple[str, ...] = (
         "Electrons", "Muons", "Jets", "BJets", "Photons", "Taus"
     )
-    min_particles_in_combination: int = 2
+    min_particles_in_combination: int = 1
     max_particles_in_combination: int = 4
     min_count_particle_in_combination: int = 2
     max_count_particle_in_combination: int = 4
     max_total_particles_in_combination: int = 4
     min_events_per_fs: int = 100  # Minimum events for a final state to be kept
-    include_subleading: bool = False       # set True to include e1, j1, etc.
+    include_subleading: bool = True        # include e1, j1, etc. by default
     max_subleading_index: int = 1          # highest rank index to consider
     
     def __post_init__(self):
@@ -188,9 +211,6 @@ class HistogramCreationConfig:
     use_bumpnet_naming: bool = False  # When true, use mass_<combo>_cat_<final_state> naming
     apply_peak_removal_at_histogram_level: bool = False
     
-    # Global ranges (set automatically by update_config_paths_with_run_dir)
-    global_ranges_path: Optional[str] = None
-
     # Pre-postproc histograms
     also_save_pre_postproc: bool = False
     pre_postproc_filename: Optional[str] = None
@@ -223,6 +243,8 @@ class PipelineConfig:
     mass_calculation_config: Optional[MassCalculationConfig] = None
     post_processing_config: Optional[PostProcessingConfig] = None
     histogram_creation_config: Optional[HistogramCreationConfig] = None
+        # Trigger matching configuration
+    trigger_config: Optional[dict] = None
     
     # Run metadata
     run_name: str = "pipeline_run"
@@ -279,6 +301,14 @@ class PipelineConfig:
             do_histogram_creation=tasks_dict.get("do_histogram_creation", False),
         )
         
+        # Resolve this once because parsing must use the same allow-list as
+        # invariant-mass calculation, even in parsing-only runs.
+        mass_dict = config_dict.get("mass_calculation_task_config", {})
+        objects_raw = mass_dict.get("objects_to_calculate")
+        objects = tuple(objects_raw) if objects_raw else (
+            "Electrons", "Muons", "Jets", "BJets", "Photons", "Taus"
+        )
+
         # Parse parsing config if parsing is enabled
         parsing_config = None
         if tasks.do_parsing:
@@ -308,19 +338,12 @@ class PipelineConfig:
                 jet_btagging_thresholds=parsing_dict.get("jet_btagging_thresholds", None),
                 particle_counts=parsing_dict.get("particle_counts"),
                 kinematic_cuts=parsing_dict.get("kinematic_cuts"),
+                objects_to_store=objects,
             )
         
         # Parse mass calculation config if enabled
         mass_calculation_config = None
-        if tasks.do_mass_calculating:
-            mass_dict = config_dict.get("mass_calculation_task_config", {})
-            
-            # Handle objects_to_calculate (can be None or list)
-            objects_raw = mass_dict.get("objects_to_calculate")
-            objects = tuple(objects_raw) if objects_raw else (
-                "Electrons", "Muons", "Jets", "BJets", "Photons", "Taus"
-            )
-            
+        if tasks.do_mass_calculating or tasks.do_post_processing:
             mass_calculation_config = MassCalculationConfig(
                 input_dir=mass_dict["input_dir"],
                 output_dir=mass_dict["output_dir"],
@@ -329,13 +352,13 @@ class PipelineConfig:
                 parallel_processes=mass_dict.get("parallel_processes", 4),
                 fs_chunk_threshold_bytes=mass_dict.get("fs_chunk_threshold_bytes", 500_000_000),
                 objects_to_calculate=objects,
-                min_particles_in_combination=mass_dict.get("min_particles_in_combination", 2),
+                min_particles_in_combination=mass_dict.get("min_particles_in_combination", 1),
                 max_particles_in_combination=mass_dict.get("max_particles_in_combination", 4),
                 min_count_particle_in_combination=mass_dict.get("min_count_particle_in_combination", 2),
                 max_count_particle_in_combination=mass_dict.get("max_count_particle_in_combination", 4),
                 max_total_particles_in_combination=mass_dict.get("max_total_particles_in_combination", 4),
                 min_events_per_fs=mass_dict.get("min_events_per_fs", 100),
-                include_subleading=mass_dict.get("include_subleading", False),
+                include_subleading=mass_dict.get("include_subleading", True),
                 max_subleading_index=mass_dict.get("max_subleading_index", 1),
             )
         
@@ -366,7 +389,6 @@ class PipelineConfig:
                 apply_peak_removal_at_histogram_level=hist_dict.get(
                     "apply_peak_removal_at_histogram_level", False
                 ),
-                global_ranges_path=hist_dict.get("global_ranges_path"),
                 also_save_pre_postproc=hist_dict.get("also_save_pre_postproc", False),
                 pre_postproc_filename=hist_dict.get("pre_postproc_filename"),
             )
@@ -380,6 +402,7 @@ class PipelineConfig:
             mass_calculation_config=mass_calculation_config,
             post_processing_config=post_processing_config,
             histogram_creation_config=histogram_creation_config,
+            trigger_config=config_dict.get("trigger_config"),
             run_name=run_metadata.get("run_name", "pipeline_run"),
             batch_job_index=run_metadata.get("batch_job_index"),
             total_batch_jobs=run_metadata.get("total_batch_jobs"),

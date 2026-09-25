@@ -14,6 +14,11 @@ from services.calculations.combinatorics import get_count, get_start
 
 
 class IMCalculator:
+    FINAL_STATE_OBJECTS = (
+        ("Electrons", "e"), ("Muons", "m"), ("Jets", "j"),
+        ("Photons", "g"), ("Taus", "t"), ("BJets", "b"),
+    )
+
     def __init__(self, events: ak.Array, min_events_per_fs: int,
                  min_k: int, max_k: int, min_n: int, max_n: int):
         self.events = events
@@ -53,9 +58,7 @@ class IMCalculator:
 
     @staticmethod
     def _get_particle_mass(particle_type: str, particle_array: ak.Array) -> ak.Array:
-        if 'm' in particle_array.fields:
-            return particle_array.m
-        return consts.KNOWN_MASSES.get(particle_type, 0.0)
+        return physics_calcs.get_particle_known_mass(particle_type, particle_array)
 
     def _get_all_events_fs(self) -> ak.Array:
         if self._all_events_fs is None:
@@ -63,17 +66,20 @@ class IMCalculator:
             num_events = len(self.events)
             zero_array = ak.Array([0] * num_events) if num_events > 0 else ak.Array([])
 
-            e = ak.to_numpy(getattr(particle_counts, "Electrons", zero_array))
-            m = ak.to_numpy(getattr(particle_counts, "Muons", zero_array))
-            j = ak.to_numpy(getattr(particle_counts, "Jets", zero_array))
-            g = ak.to_numpy(getattr(particle_counts, "Photons", zero_array))
-            t = ak.to_numpy(getattr(particle_counts, "Taus", zero_array))
-            b = ak.to_numpy(getattr(particle_counts, "BJets", zero_array))
+            present_types = [
+                (name, letter, ak.to_numpy(getattr(particle_counts, name, zero_array)))
+                for name, letter in self.FINAL_STATE_OBJECTS
+                if name in self.events.fields
+            ]
 
             all_events_fs = [
-                f"{e}e_{m}m_{j}j_{g}g_{t}t_{b}b"
-                for e, m, j, g, t, b in zip(e, m, j, g, t, b)
-                if self._is_valid_fs([e, m, j, g, t, b])
+                "_".join(
+                    f"{count}{letter}"
+                    for (_name, letter, _values), count in zip(present_types, counts)
+                )
+                # This is used to create a mask later on, so we must keep this the same length as the event list.
+                if self._is_valid_fs(counts) else ""
+                for counts in zip(*[values for _name, _letter, values in present_types])
             ]
             self._all_events_fs = ak.Array(all_events_fs)
         return self._all_events_fs
@@ -88,10 +94,7 @@ class IMCalculator:
         return True
 
     def group_by_final_state(self) -> Iterator[str]:
-        all_events_fs = self._get_all_events_fs()
-        all_events_fs_list = ak.to_list(all_events_fs)
-
-        fs_by_count = Counter(all_events_fs_list)
+        fs_by_count = self.final_state_counts()
         fs_by_count_sorted = [
             (fs, count) for fs, count in fs_by_count.most_common()
             if count >= self.min_events_per_fs
@@ -99,6 +102,12 @@ class IMCalculator:
 
         for fs, _count in fs_by_count_sorted:
             yield self._limit_particles_in_fs(fs, threshold=4)
+
+    def final_state_counts(self) -> Counter:
+        """Return valid final-state populations before invariant-mass work."""
+        counts = Counter(ak.to_list(self._get_all_events_fs()))
+        counts.pop("", None)
+        return counts
 
     def get_events_for_final_state(self, final_state: str) -> ak.Array:
         all_events_fs = self._get_all_events_fs()

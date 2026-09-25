@@ -8,12 +8,25 @@ No orchestration logic, no state management.
 import logging
 import awkward as ak
 import numpy as np
-import uproot
 import itertools
 from typing import Optional
 
 from services.parsing import schemas
+from services.parsing.root_io import open_root_file
 from services import consts
+
+
+class PartialFileReadError(RuntimeError):
+    """A ROOT file failed after a usable prefix of its events was parsed."""
+
+    def __init__(self, file_path: str, events: ak.Array, read_error: Exception):
+        self.file_path = file_path
+        self.events = events
+        self.read_error = read_error
+        super().__init__(
+            f"ROOT read failed for {file_path}: {read_error}; "
+            f"retaining {len(events)} events parsed before the failure"
+        )
 
 
 class FileParser:
@@ -45,7 +58,7 @@ class FileParser:
             Awkward array of events with particle objects, or None if parsing failed
         """
         try:
-            with uproot.open(file_path) as root_file:
+            with open_root_file(file_path) as root_file:
                 return FileParser._parse_opened_file(
                     root_file,
                     tree_names,
@@ -55,8 +68,10 @@ class FileParser:
                     enable_jet_tagging,
                     jet_btagging_thresholds,
                 )
+        except PartialFileReadError:
+            raise
         except Exception as e:
-            logging.warning(f"Failed to open file {file_path}: {e}")
+            logging.warning(f"Failed to parse file {file_path}: {e}")
             return None
     
     @staticmethod
@@ -67,7 +82,7 @@ class FileParser:
         batch_size: int,
         file_path: str,
         enable_jet_tagging: bool,
-        jet_btagging_thresholds: Optional[dict[str, float]]
+        jet_btagging_thresholds: Optional[dict[str, float]],
     ) -> Optional[ak.Array]:
         """Parse an already-opened ROOT file."""
         tree_name = FileParser._get_data_tree_name(root_file.keys(), tree_names)
@@ -77,7 +92,8 @@ class FileParser:
         
         obj_branches = FileParser._extract_branches_by_schema(
             all_tree_branches,
-            release_year
+            release_year,
+            include_direct_objects=enable_jet_tagging,
         )
 
         if not obj_branches:
@@ -91,18 +107,49 @@ class FileParser:
             return None
         
         all_branches = set(itertools.chain.from_iterable(obj_branches.values()))
-        obj_events = FileParser._read_file_in_batches(
+        obj_events, read_error = FileParser._read_file_in_batches(
             tree,
             all_branches,
             obj_branches,
             n_entries,
             batch_size
         )
+        obj_events = FileParser._split_combined_leptons(obj_events, release_year)
         if enable_jet_tagging:
             obj_events = FileParser._calculate_btagging_and_split(obj_events, jet_btagging_thresholds)
         # Strip out DirectObjects -- they are not physics objects!
-        obj_events.pop("DirectObjects")
-        return ak.zip(obj_events, depth_limit=1)
+        if "DirectObjects" in obj_events.keys():
+            obj_events.pop("DirectObjects")
+        events = ak.zip(obj_events, depth_limit=1)
+        if read_error is not None:
+            raise PartialFileReadError(file_path, events, read_error) from read_error
+        return events
+
+    @staticmethod
+    def _split_combined_leptons(
+        obj_events: dict[str, ak.Array], release_year: str
+    ) -> dict[str, ak.Array]:
+        """Split legacy ``lep_*`` branches using their absolute PDG identifier."""
+        normalized_release = schemas.normalize_release_year(release_year)
+        if normalized_release not in {"2016e-8tev", "2025e-13tev-beta"}:
+            return obj_events
+
+        source = obj_events.get("Electrons")
+        if source is None:
+            source = obj_events.get("Muons")
+        # A restricted allow-list may intentionally omit both combined-lepton
+        # collections, in which case there is nothing to split.
+        if source is None:
+            return obj_events
+        if "type" not in source.fields:
+            raise ValueError(
+                f"{normalized_release} combined lepton branches require lep_type"
+            )
+
+        abs_type = abs(source["type"])
+        obj_events["Electrons"] = source[abs_type == 11]
+        obj_events["Muons"] = source[abs_type == 13]
+        return obj_events
 
     @staticmethod
     def _calculate_btagging_and_split(
@@ -117,6 +164,10 @@ class FileParser:
         # TODO Find a cleaner way to determine if dealing with nanoAOD, PHYSLITE, etc.
         # TODO Maybe add an explicit check if the algorithm-specific threshold exists in the configuration dict before
         # accessing it. However, I'd rather fail parsing then give false physics data.
+        if "Jets" not in obj_events or "DirectObjects" not in obj_events:
+            # No jets to tag. Move on.
+            return obj_events
+
         if "Jet_btagDeepFlavB" in obj_events["DirectObjects"].fields:
             # CMS: Discriminant is pre-calculated as the Jet_btagDeepFlavB field. Can change to a different algorithm if needed.
             # See https://cms-opendata-workshop.github.io/workshop2024-lesson-physics-objects/instructor/05-btagging.html
@@ -129,8 +180,19 @@ class FileParser:
             pu = obj_events["DirectObjects"]["BTagging_AntiKt4EMPFlowAuxDyn.DL1dv01_pu"][indices]
             # DL1d score: log(pb / (fc*pc + (1-fc)*pu)), fc=0.018 is standard ATLAS.
             fc = 0.018
-            dl1d = np.log(pb / (fc * pc + (1 - fc) * pu))
-            is_bjet = dl1d > jet_btagging_thresholds["DL1d"]
+
+            # Handle edge cases where pb=0, or pc=pu=0.
+            denominator = fc * pc + (1 - fc) * pu
+            is_scoreable = (pb > 0) & (denominator > 0)
+            dl1d = np.log(
+                ak.where(is_scoreable, pb, 1.0) / ak.where(is_scoreable, denominator, 1.0)
+            )
+            # For now, if not scoreable -- assume jet.
+            is_bjet = ak.where(
+                is_scoreable,
+                dl1d > jet_btagging_thresholds["DL1d"],
+                False,
+            )
         else:
             return obj_events
         obj_events["BJets"] = obj_events["Jets"][is_bjet]
@@ -156,7 +218,8 @@ class FileParser:
     @staticmethod
     def _extract_branches_by_schema(
         tree_branches: set[str],
-        release_year: str
+        release_year: str,
+        include_direct_objects: bool = False,
     ) -> dict[str, dict[str, str]]:
         """
         Extract branches by object based on release-specific schema.
@@ -199,9 +262,24 @@ class FileParser:
             if obj_branches_for_obj:
                 obj_branches[obj_name] = obj_branches_for_obj
         # Keep direct object names as-is, but store them under the "DirectObjects" key.
-        obj_branches.update({"DirectObjects": {k: k for k in direct_objects}})
+        if include_direct_objects:
+            obj_branches.update({"DirectObjects": {k: k for k in direct_objects}})
+
+        # Trigger matching branches (event-level, per-particle ElementLink vectors).
+        # Each branch is a ``var * var * ElementLink``; a non-empty inner list means
+        # that offline particle matched the HLT trigger object within ΔR < 0.07.
+        # Stored under ``_triggerMatch`` so downstream code can distinguish them
+        # from particle-type fields.
+        trigger_branches = schemas.get_all_trigger_branches()
+        available_trigger = [b for b in trigger_branches if b in tree_branches]
+        if available_trigger:
+            obj_branches["_triggerMatch"] = {b: b for b in available_trigger}
+        # MC only: the random run number picks each event's trigger year.
+        if schemas.RANDOM_RUN_NUMBER_BRANCH in tree_branches:
+            obj_branches["_runNumber"] = {schemas.RANDOM_RUN_NUMBER_BRANCH: "_runNumber"}
+
         return obj_branches
-    
+
     @staticmethod
     def _prepare_obj_branch_name(
         obj_name: str,
@@ -415,9 +493,13 @@ class FileParser:
                 bp: qty for bp, qty in branch_mapping.items()
                 if bp in accessible_set
             }
-            if accessible_branches and FileParser._can_calculate_inv_mass(
+            if obj_name in ("DirectObjects", "_triggerMatch", "_runNumber"):
+                # These are not particle types — skip the inv-mass field check.
+                if accessible_branches:
+                    accessible_obj_branches[obj_name] = accessible_branches
+            elif accessible_branches and FileParser._can_calculate_inv_mass(
                 list(accessible_branches.values())
-            ) or obj_name == "DirectObjects":
+            ):
                 accessible_obj_branches[obj_name] = accessible_branches
         
         return accessible_obj_branches
@@ -429,10 +511,11 @@ class FileParser:
         obj_branches: dict[str, dict[str, str]],
         n_entries: int,
         batch_size: int
-    ) -> dict[str, ak.Array]:
+    ) -> tuple[dict[str, ak.Array], Optional[Exception]]:
         obj_events_by_quantities = {
             obj_name: [] for obj_name in obj_branches.keys()
         }
+        read_error = None
         
         is_file_big = n_entries > batch_size
         if is_file_big:
@@ -452,8 +535,12 @@ class FileParser:
                     library="ak"
                 )
             except Exception as e:
-                logging.warning(f"Error reading batch {entry_start}-{entry_stop}: {e}")
-                continue
+                read_error = RuntimeError(
+                    f"batch {entry_start}-{entry_stop} failed with "
+                    f"{type(e).__name__}: {e}"
+                )
+                logging.warning("Stopping partial ROOT read: %s", read_error)
+                break
             
             for obj_name, branch_mapping in obj_branches.items():
                 available_branches = [
@@ -468,15 +555,38 @@ class FileParser:
         for obj_name, chunks in obj_events_by_quantities.items():
             if chunks:
                 concatenated = ak.concatenate(chunks)
-                result[obj_name] = ak.zip({
-                    quantity: concatenated[full_branch]
-                    for full_branch, quantity in obj_branches[obj_name].items()
-                })
+                if obj_name == "_triggerMatch":
+                    # Trigger branches are ``var * var * ElementLink``.
+                    # We collapse each to a single per-event boolean:
+                    # True if ANY particle in the event has a non-empty match
+                    # for that chain.  The result is a record of booleans keyed
+                    # by the original branch name.
+                    trig_fields = {}
+                    for full_branch in obj_branches[obj_name].keys():
+                        if full_branch not in concatenated.fields:
+                            continue
+                        raw = concatenated[full_branch]
+                        # raw[i] holds one entry per matched combination in event i;
+                        # raw[i][j] links the offline particle(s) of combination j.
+                        # The event matched if any combination is non-empty.
+                        per_particle_matched = ak.num(raw, axis=2) > 0
+                        trig_fields[full_branch] = ak.any(per_particle_matched, axis=1)
+                    if trig_fields:
+                        result[obj_name] = ak.zip(trig_fields)
+                elif obj_name == "_runNumber":
+                    result[obj_name] = concatenated[schemas.RANDOM_RUN_NUMBER_BRANCH]
+                else:
+                    result[obj_name] = ak.zip({
+                        quantity: concatenated[full_branch]
+                        for full_branch, quantity in obj_branches[obj_name].items()
+                    })
         
-        return result
+        return result, read_error
     
     @staticmethod
-    def _auto_detect_branches(tree_branches: set[str]) -> dict[str, dict[str, str]]:
+    def _auto_detect_branches(
+        tree_branches: set[str]
+    ) -> dict[str, dict[str, str]]:
         """
         Auto-detect branch structure when schema is not available.
         Attempts to find branches matching common patterns.

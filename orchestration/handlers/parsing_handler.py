@@ -21,8 +21,54 @@ from services.parsing.event_accumulator import EventAccumulator
 from services.parsing.threaded_processor import ThreadedFileProcessor, ParsingStatisticsCollector
 from domain.statistics import ParsingStatistics
 from domain.events import EventBatch
-from services.parsing.event_selection import apply_parsing_event_selection
+from services.parsing.event_selection import (
+    apply_parsing_event_selection, apply_trigger_selection, retain_objects_for_storage,
+)
+from services.parsing.schemas import normalize_release_year
 from utils.batching import get_batch_slice_by_year
+
+
+def select_metadata_for_parsing(
+    metadata: dict[str, list[str]],
+    release_years,
+    parse_mc: bool,
+) -> dict[str, list[str]]:
+    """Select exactly the requested ATLAS dataset mode from cached metadata.
+
+    ATLAS metadata is stored under paired keys such as ``2024r-pp`` for data
+    and ``2024r-pp_mc`` for Monte Carlo. ``parse_mc`` selects one member of
+    each pair; it does not mean that data and MC should be parsed together.
+    """
+    requested_releases = list(release_years or [])
+    if requested_releases:
+        selected_keys = set()
+        for release in requested_releases:
+            if release.startswith("record_"):
+                selected_keys.add(release)
+                continue
+            base_release = release[:-3] if release.endswith("_mc") else release
+            selected_keys.add(f"{base_release}_mc" if parse_mc else base_release)
+
+        missing_keys = sorted(
+            key for key in selected_keys if not metadata.get(key)
+        )
+        if missing_keys:
+            mode = "MC" if parse_mc else "data"
+            raise RuntimeError(
+                f"No {mode} metadata found for requested release key(s): "
+                f"{missing_keys}. Available keys: {sorted(metadata)}"
+            )
+        return {
+            key: urls for key, urls in metadata.items() if key in selected_keys
+        }
+
+    # Explicit record IDs are not paired ATLAS release keys, so parse_mc does
+    # not alter their selection. For ATLAS releases, retain exactly one mode.
+    return {
+        key: urls
+        for key, urls in metadata.items()
+        if key.startswith("record_") or key.endswith("_mc") == parse_mc
+    }
 
 
 class ParsingHandler(StateHandler):
@@ -106,20 +152,25 @@ class ParsingHandler(StateHandler):
             next_state = self._determine_next_state(context)
             return context, next_state
         
+        trigger_cfg = getattr(context.config, "trigger_config", None) or {}
+
         start_time = datetime.now()
         stats_collector = ParsingStatisticsCollector()
         parsed_files = []
         
         # ---- Apply batch splitting if configured ----
         metadata = dict(context.metadata)  # mutable copy
-        # Filter to only requested release years (supports _mc suffix convention)
-        if parsing_config.release_years:
-            metadata = {k: v for k, v in metadata.items()
-                        if k in parsing_config.release_years}
-            self.logger.info(
-                f"Filtered metadata to release_years={parsing_config.release_years}: "
-                f"{list(metadata.keys())}"
-            )
+        metadata = select_metadata_for_parsing(
+            metadata,
+            parsing_config.release_years,
+            parsing_config.parse_mc,
+        )
+        self.logger.info(
+            "Selected %s metadata for release_years=%s: %s",
+            "MC" if parsing_config.parse_mc else "data",
+            parsing_config.release_years,
+            list(metadata.keys()),
+        )
         batch_idx = context.config.batch_job_index
         total_batches = context.config.total_batch_jobs
         
@@ -143,14 +194,6 @@ class ParsingHandler(StateHandler):
         
         # Parse each release year
         for release_year, file_urls in metadata.items():
-            # ── Skip MC keys when parse_mc=False ─────────────────────────────────────
-            # The fetcher always separates data and MC into separate keys (e.g.
-            # '2024r-pp' and '2024r-pp_mc'). parse_mc controls whether MC is
-            # included in the parsing run, not whether it is separated.
-            if release_year.endswith("_mc") and not parsing_config.parse_mc:
-                self.logger.info(f"Skipping MC key '{release_year}' (parse_mc=False)")
-                continue
-
             self.logger.info(
                 f"Parsing {len(file_urls)} files for release year: {release_year}"
             )
@@ -173,15 +216,19 @@ class ParsingHandler(StateHandler):
                 on_success=on_success,
                 on_error=on_error
             ):
-                if parsing_config.kinematic_cuts or parsing_config.particle_counts:
-                    filtered = apply_parsing_event_selection(
+
+                # Apply single-lepton trigger matching if enabled,
+                # and always strip _triggerMatch before kinematic cuts
+                if trigger_cfg.get("enabled", False):
+                    filtered = apply_trigger_selection(
                         batch.events,
-                        particle_counts=parsing_config.particle_counts,
-                        kinematic_cuts=parsing_config.kinematic_cuts,
+                        release_year=release_year,
+                        file_path=batch.file_url,
                     )
                     batch = EventBatch(
                         events=filtered,
                         file_id=batch.file_id,
+                        file_url=batch.file_url,
                         release_year=batch.release_year,
                         size_bytes=(
                             filtered.layout.nbytes
@@ -191,7 +238,46 @@ class ParsingHandler(StateHandler):
                         event_count=len(filtered),
                         processing_time_sec=batch.processing_time_sec,
                     )
+                elif "_triggerMatch" in batch.events.fields or "_runNumber" in batch.events.fields:
+                    # Strip trigger fields even when not filtering
+                    clean = {f: batch.events[f] for f in batch.events.fields if f not in ("_triggerMatch", "_runNumber")}
+                    cleaned_events = ak.zip(clean, depth_limit=1)
+                    batch = EventBatch(
+                        events=cleaned_events,
+                        file_id=batch.file_id,
+                        file_url=batch.file_url,
+                        release_year=batch.release_year,
+                        size_bytes=batch.size_bytes,
+                        event_count=len(cleaned_events),
+                        processing_time_sec=batch.processing_time_sec,
+                    )
 
+                # Always apply selection: objects excluded from mass calculation
+                # have an implicit 0..0 count range and must veto the event.
+                filtered = apply_parsing_event_selection(
+                    batch.events,
+                    particle_counts=parsing_config.particle_counts,
+                    kinematic_cuts=parsing_config.kinematic_cuts,
+                    allowed_objects=parsing_config.objects_to_store,
+                )
+                # Discard excluded collections only after their kinematic and
+                # count-based veto has been applied.
+                filtered = retain_objects_for_storage(
+                    filtered, parsing_config.objects_to_store
+                )
+                batch = EventBatch(
+                    events=filtered,
+                    file_id=batch.file_id,
+                    file_url=batch.file_url,
+                    release_year=batch.release_year,
+                    size_bytes=(
+                        filtered.layout.nbytes
+                        if hasattr(filtered, "layout")
+                        else batch.size_bytes
+                    ),
+                    event_count=len(filtered),
+                    processing_time_sec=batch.processing_time_sec,
+                )
                 # Accumulate batch into chunks
                 chunk = self.accumulator.add_batch(batch)
                 
