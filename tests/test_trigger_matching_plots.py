@@ -1,4 +1,4 @@
-"""Tests for the enabled/disabled collision-data comparison plotter."""
+"""Tests for the single-run collision-data validation plotter."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import pytest
 uproot = pytest.importorskip("uproot")
 pytest.importorskip("matplotlib")
 
-from plots.trigger_matching_plots.compare import build_comparison
+from plots.trigger_matching_plots.compare import build_plots
 
 
 def _write_parsed_file(path: Path, scale: float) -> None:
@@ -23,20 +23,16 @@ def _write_parsed_file(path: Path, scale: float) -> None:
         }
 
 
-def test_build_comparison_writes_collision_data_validation_plots(tmp_path: Path) -> None:
-    enabled = tmp_path / "enabled" / "parsed_data"
-    disabled = tmp_path / "disabled" / "parsed_data"
-    enabled.mkdir(parents=True)
-    disabled.mkdir(parents=True)
-    _write_parsed_file(enabled / "parsed_enabled.root", 1.0)
-    _write_parsed_file(disabled / "parsed_disabled.root", 0.8)
+def test_build_plots_writes_collision_data_validation_plots(tmp_path: Path) -> None:
+    parsed_data = tmp_path / "run" / "parsed_data"
+    parsed_data.mkdir(parents=True)
+    _write_parsed_file(parsed_data / "parsed_data.root", 1.0)
 
     output = tmp_path / "plots"
-    summary = build_comparison(enabled.parent, disabled.parent, output)
+    summary = build_plots(parsed_data.parent, output)
 
-    assert summary["trigger_enabled"]["event_count"] == 3
-    assert summary["trigger_disabled"]["event_count"] == 3
-    assert summary["trigger_enabled"]["top_control_event_count"] == 1
+    assert summary["event_count"] == 3
+    assert summary["top_control_event_count"] == 1
     assert (output / "summary.json").is_file()
     for name in (
         "01_event_yields.png",

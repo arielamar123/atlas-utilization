@@ -1,21 +1,26 @@
 # Collision-data trigger-matching validation plots
 
 Run the same collision-data file list and analysis configuration twice: once
-with lepton trigger matching enabled, and once with it disabled. Then compare
-the resulting parsed event files:
+with lepton trigger matching enabled, and once with it disabled. Generate a
+separate plot directory for each completed run:
 
 ```bash
 python plots/trigger_matching_plots/compare.py \
-  --enabled /path/to/trigger_enabled_run \
-  --disabled /path/to/trigger_disabled_run
+  --input /path/to/trigger_enabled_run \
+  --output-dir plots/trigger_matching_plots/enabled
+
+python plots/trigger_matching_plots/compare.py \
+  --input /path/to/trigger_disabled_run \
+  --output-dir plots/trigger_matching_plots/disabled
 ```
 
 The command writes PNGs and `summary.json` to
-`plots/trigger_matching_plots/generated` by default. Use `--output-dir` to
-keep comparisons from different runs separate.
+`plots/trigger_matching_plots/generated` by default. The figures use identical
+fixed binning and formatting, so compare the enabled and disabled directories
+visually.
 
 The figures deliberately include both raw yields (`01_event_yields.png`) and
-unit-area shapes with an enabled/disabled ratio:
+unit-area shapes:
 
 - leading and inclusive muon \(p_T\), where the enabled sample should show the
   trigger turn-on and should be stable on the plateau;

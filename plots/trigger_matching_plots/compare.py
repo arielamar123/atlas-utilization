@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Compare parsed collision-data outputs with trigger matching enabled/disabled.
+"""Create collision-data lepton-trigger validation plots for one pipeline run.
 
 The parser deliberately removes temporary trigger/run metadata before writing its
 ``events`` ROOT tree.  This tool therefore validates the *analysis-level*
-effect of matching: event yields and object distributions in two otherwise
-identical pipeline runs.
+effect of matching for one pipeline run. Run it separately after the enabled
+and disabled configurations, then compare the identically named figures by eye.
 """
 
 from __future__ import annotations
@@ -108,7 +108,7 @@ def _required_fields(tree: uproot.behaviors.TTree.TTree) -> set[str]:
 
 
 def summarize(input_path: str | Path) -> DatasetSummary:
-    """Stream parsed ROOT files and return comparison histograms."""
+    """Stream parsed ROOT files and return validation histograms."""
 
     summary = DatasetSummary()
     for root_file in discover_parsed_files(input_path):
@@ -166,60 +166,36 @@ def _normalised(counts: np.ndarray) -> np.ndarray:
     return counts / total if total else np.zeros_like(counts, dtype=float)
 
 
-def _plot_overlay(
-    enabled: np.ndarray,
-    disabled: np.ndarray,
+def _plot_distribution(
+    counts: np.ndarray,
     bins: np.ndarray,
     xlabel: str,
     output_file: Path,
 ) -> None:
-    """Plot unit-area shapes plus enabled/disabled ratio."""
+    """Write a single-run unit-area distribution with fixed bins and style."""
 
-    enabled_shape = _normalised(enabled)
-    disabled_shape = _normalised(disabled)
-    fig, (top, ratio) = plt.subplots(
-        2, 1, sharex=True, figsize=(7.5, 6.3), gridspec_kw={"height_ratios": [3, 1]}
-    )
-    top.stairs(enabled_shape, bins, label="Trigger enabled", color="C0", linewidth=1.8)
-    top.stairs(disabled_shape, bins, label="Trigger disabled", color="C1", linewidth=1.8)
-    top.set_ylabel("Unit-area events")
-    top.legend()
-    top.grid(alpha=0.25)
-
-    values = np.divide(
-        enabled_shape,
-        disabled_shape,
-        out=np.full_like(enabled_shape, np.nan, dtype=float),
-        where=disabled_shape > 0,
-    )
-    ratio.stairs(values, bins, color="black", linewidth=1.4)
-    ratio.axhline(1.0, color="gray", linestyle="--", linewidth=1)
-    ratio.set_ylim(0.0, 2.0)
-    ratio.set_ylabel("On / off")
-    ratio.set_xlabel(xlabel)
-    ratio.grid(alpha=0.25)
+    fig, axis = plt.subplots(figsize=(7.5, 4.8))
+    axis.stairs(_normalised(counts), bins, color="C0", linewidth=1.8)
+    axis.set_ylabel("Unit-area events")
+    axis.set_xlabel(xlabel)
+    axis.grid(alpha=0.25)
     fig.tight_layout()
     fig.savefig(output_file, dpi=160)
     plt.close(fig)
 
 
-def _plot_event_yields(enabled: DatasetSummary, disabled: DatasetSummary, output_file: Path) -> None:
+def _plot_event_yields(summary: DatasetSummary, output_file: Path) -> None:
     labels = ["All parsed events"]
-    on_values = [enabled.event_count]
-    off_values = [disabled.event_count]
-    if enabled.top_control_event_count is not None and disabled.top_control_event_count is not None:
+    values = [summary.event_count]
+    if summary.top_control_event_count is not None:
         labels.append(r"$\mu$ + $\geq4j$ + $\geq1b$ control")
-        on_values.append(enabled.top_control_event_count)
-        off_values.append(disabled.top_control_event_count)
+        values.append(summary.top_control_event_count)
     positions = np.arange(len(labels))
-    width = 0.36
     fig, axis = plt.subplots(figsize=(7.5, 4.5))
-    axis.bar(positions - width / 2, on_values, width, label="Trigger enabled", color="C0")
-    axis.bar(positions + width / 2, off_values, width, label="Trigger disabled", color="C1")
+    axis.bar(positions, values, color="C0")
     axis.set_xticks(positions, labels)
     axis.set_ylabel("Events")
     axis.set_yscale("log")
-    axis.legend()
     axis.grid(axis="y", alpha=0.25)
     fig.tight_layout()
     fig.savefig(output_file, dpi=160)
@@ -244,51 +220,45 @@ def _summary_dict(summary: DatasetSummary) -> dict[str, object]:
     }
 
 
-def build_comparison(
-    enabled_path: str | Path, disabled_path: str | Path, output_dir: str | Path
-) -> dict[str, object]:
-    """Create validation plots and ``summary.json``; return its contents."""
+def build_plots(input_path: str | Path, output_dir: str | Path) -> dict[str, object]:
+    """Create single-run validation plots and ``summary.json``."""
 
     output = Path(output_dir).expanduser().resolve()
     output.mkdir(parents=True, exist_ok=True)
-    enabled = summarize(enabled_path)
-    disabled = summarize(disabled_path)
+    summary = summarize(input_path)
 
-    _plot_event_yields(enabled, disabled, output / "01_event_yields.png")
-    _plot_overlay(enabled.leading_muon_pt, disabled.leading_muon_pt, PT_BINS_GEV,
-                  r"Leading muon $p_T$ [GeV]", output / "02_leading_muon_pt.png")
-    _plot_overlay(enabled.all_muon_pt, disabled.all_muon_pt, PT_BINS_GEV,
-                  r"Muon $p_T$ [GeV]", output / "03_all_muon_pt.png")
-    _plot_overlay(enabled.jet_multiplicity, disabled.jet_multiplicity, MULTIPLICITY_BINS,
-                  "Jet multiplicity", output / "04_jet_multiplicity.png")
-    _plot_overlay(enabled.leading_jet_pt, disabled.leading_jet_pt, PT_BINS_GEV,
-                  r"Leading jet $p_T$ [GeV]", output / "05_leading_jet_pt.png")
+    _plot_event_yields(summary, output / "01_event_yields.png")
+    _plot_distribution(summary.leading_muon_pt, PT_BINS_GEV,
+                       r"Leading muon $p_T$ [GeV]", output / "02_leading_muon_pt.png")
+    _plot_distribution(summary.all_muon_pt, PT_BINS_GEV,
+                       r"Muon $p_T$ [GeV]", output / "03_all_muon_pt.png")
+    _plot_distribution(summary.jet_multiplicity, MULTIPLICITY_BINS,
+                       "Jet multiplicity", output / "04_jet_multiplicity.png")
+    _plot_distribution(summary.leading_jet_pt, PT_BINS_GEV,
+                       r"Leading jet $p_T$ [GeV]", output / "05_leading_jet_pt.png")
 
-    if enabled.bjet_multiplicity is not None and disabled.bjet_multiplicity is not None:
-        _plot_overlay(enabled.bjet_multiplicity, disabled.bjet_multiplicity,
-                      MULTIPLICITY_BINS, "b-jet multiplicity",
-                      output / "06_bjet_multiplicity.png")
-    if enabled.top_control_muon_pt is not None and disabled.top_control_muon_pt is not None:
-        _plot_overlay(enabled.top_control_muon_pt, disabled.top_control_muon_pt,
-                      PT_BINS_GEV, r"Leading muon $p_T$ [GeV]",
-                      output / "07_muon_4jet_1b_control_muon_pt.png")
+    if summary.bjet_multiplicity is not None:
+        _plot_distribution(summary.bjet_multiplicity, MULTIPLICITY_BINS,
+                           "b-jet multiplicity", output / "06_bjet_multiplicity.png")
+    if summary.top_control_muon_pt is not None:
+        _plot_distribution(summary.top_control_muon_pt, PT_BINS_GEV,
+                           r"Leading muon $p_T$ [GeV]",
+                           output / "07_muon_4jet_1b_control_muon_pt.png")
 
-    payload = {"trigger_enabled": _summary_dict(enabled), "trigger_disabled": _summary_dict(disabled)}
+    payload = _summary_dict(summary)
     (output / "summary.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     return payload
 
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--enabled", required=True, help="Pipeline output with trigger matching enabled")
-    parser.add_argument("--disabled", required=True, help="Equivalent pipeline output with matching disabled")
+    parser.add_argument("--input", required=True, help="Pipeline output to plot")
     parser.add_argument("--output-dir", default="plots/trigger_matching_plots/generated",
                         help="Directory for generated PNGs and summary.json")
     arguments = parser.parse_args(argv)
-    payload = build_comparison(arguments.enabled, arguments.disabled, arguments.output_dir)
+    payload = build_plots(arguments.input, arguments.output_dir)
     print(f"Wrote plots to {Path(arguments.output_dir).resolve()}")
-    print("Events (enabled / disabled): "
-          f"{payload['trigger_enabled']['event_count']} / {payload['trigger_disabled']['event_count']}")
+    print(f"Parsed events: {payload['event_count']}")
     return 0
 
 
