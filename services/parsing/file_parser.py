@@ -45,6 +45,7 @@ class FileParser:
         enable_jet_tagging: bool = False,
         jet_btagging_thresholds: Optional[dict[str, float]] = None,
         enable_trigger_matching: bool = False,
+        parse_mc: bool = False,
     ) -> Optional[ak.Array]:
         """
         Parse a single ROOT file and return events.
@@ -69,6 +70,7 @@ class FileParser:
                     enable_jet_tagging,
                     jet_btagging_thresholds,
                     enable_trigger_matching,
+                    parse_mc,
                 )
         except PartialFileReadError:
             raise
@@ -86,6 +88,7 @@ class FileParser:
         enable_jet_tagging: bool,
         jet_btagging_thresholds: Optional[dict[str, float]],
         enable_trigger_matching: bool,
+        parse_mc: bool,
     ) -> Optional[ak.Array]:
         """Parse an already-opened ROOT file."""
         tree_name = FileParser._get_data_tree_name(root_file.keys(), tree_names)
@@ -98,6 +101,7 @@ class FileParser:
             release_year,
             include_direct_objects=enable_jet_tagging,
             enable_trigger_matching=enable_trigger_matching,
+            parse_mc=parse_mc,
         )
 
         if not obj_branches:
@@ -225,6 +229,7 @@ class FileParser:
         release_year: str,
         include_direct_objects: bool = False,
         enable_trigger_matching: bool = False,
+        parse_mc: bool = False,
     ) -> dict[str, dict[str, str]]:
         """
         Extract branches by object based on release-specific schema.
@@ -280,9 +285,13 @@ class FileParser:
             available_trigger = [b for b in trigger_branches if b in tree_branches]
             if available_trigger:
                 obj_branches["_triggerMatch"] = {b: b for b in available_trigger}
-            # MC only: the random run number picks each event's trigger year.
-            if schemas.RANDOM_RUN_NUMBER_BRANCH in tree_branches:
+            # Do not infer the data/MC mode from branch availability.  The
+            # pipeline configuration is authoritative and collision data can
+            # contain both run-number decorations.
+            if parse_mc and schemas.RANDOM_RUN_NUMBER_BRANCH in tree_branches:
                 obj_branches["_runNumber"] = {schemas.RANDOM_RUN_NUMBER_BRANCH: "_runNumber"}
+            elif not parse_mc and schemas.DATA_RUN_NUMBER_BRANCH in tree_branches:
+                obj_branches["_dataRunNumber"] = {schemas.DATA_RUN_NUMBER_BRANCH: "_dataRunNumber"}
 
         return obj_branches
 
@@ -499,7 +508,7 @@ class FileParser:
                 bp: qty for bp, qty in branch_mapping.items()
                 if bp in accessible_set
             }
-            if obj_name in ("DirectObjects", "_triggerMatch", "_runNumber"):
+            if obj_name in ("DirectObjects", "_triggerMatch", "_runNumber", "_dataRunNumber"):
                 # These are not particle types — skip the inv-mass field check.
                 if accessible_branches:
                     accessible_obj_branches[obj_name] = accessible_branches
@@ -575,12 +584,21 @@ class FileParser:
                         # raw[i] holds one entry per matched combination in event i;
                         # raw[i][j] links the offline particle(s) of combination j.
                         # The event matched if any combination is non-empty.
-                        per_particle_matched = ak.num(raw, axis=2) > 0
-                        trig_fields[full_branch] = ak.any(per_particle_matched, axis=1)
+                        try:
+                            per_particle_matched = ak.num(raw, axis=2) > 0
+                            trig_fields[full_branch] = ak.any(per_particle_matched, axis=1)
+                        except Exception as error:
+                            raise ValueError(
+                                "Invalid trigger-match structure for "
+                                f"'{full_branch}': expected event -> combination "
+                                f"-> ElementLink arrays"
+                            ) from error
                     if trig_fields:
                         result[obj_name] = ak.zip(trig_fields)
                 elif obj_name == "_runNumber":
                     result[obj_name] = concatenated[schemas.RANDOM_RUN_NUMBER_BRANCH]
+                elif obj_name == "_dataRunNumber":
+                    result[obj_name] = concatenated[schemas.DATA_RUN_NUMBER_BRANCH]
                 else:
                     result[obj_name] = ak.zip({
                         quantity: concatenated[full_branch]

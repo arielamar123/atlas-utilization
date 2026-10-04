@@ -51,6 +51,7 @@ class ThreadedFileProcessor:
         enable_jet_tagging: bool = False,
         jet_btagging_thresholds: Optional[dict[str, float]] = None,
         enable_trigger_matching: bool = False,
+        parse_mc: bool = False,
         on_success: Optional[Callable[[str, int, float], None]] = None,
         on_error: Optional[Callable[[str, Exception], None]] = None
     ) -> Iterator[EventBatch]:
@@ -82,6 +83,7 @@ class ThreadedFileProcessor:
                     enable_jet_tagging,
                     jet_btagging_thresholds,
                     enable_trigger_matching,
+                    parse_mc,
                 ): file_url
                 for file_url in file_urls
             }
@@ -135,6 +137,7 @@ class ThreadedFileProcessor:
         enable_jet_tagging: bool,
         jet_btagging_thresholds: Optional[dict[str, float]],
         enable_trigger_matching: bool,
+        parse_mc: bool,
     ) -> tuple:
         """
         Parse a single file (runs in thread).
@@ -161,6 +164,7 @@ class ThreadedFileProcessor:
                 enable_jet_tagging=enable_jet_tagging,
                 jet_btagging_thresholds=jet_btagging_thresholds,
                 enable_trigger_matching=enable_trigger_matching,
+                parse_mc=parse_mc,
             )
         except PartialFileReadError as error:
             events = error.events

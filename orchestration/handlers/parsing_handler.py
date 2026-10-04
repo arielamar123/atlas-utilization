@@ -215,6 +215,7 @@ class ParsingHandler(StateHandler):
                 enable_jet_tagging=parsing_config.enable_jet_tagging,
                 jet_btagging_thresholds=parsing_config.jet_btagging_thresholds,
                 enable_trigger_matching=enable_trigger_matching,
+                parse_mc=parsing_config.parse_mc,
                 on_success=on_success,
                 on_error=on_error
             ):
@@ -226,6 +227,7 @@ class ParsingHandler(StateHandler):
                         batch.events,
                         release_year=release_year,
                         file_path=batch.file_url,
+                        parse_mc=parsing_config.parse_mc,
                     )
                     batch = EventBatch(
                         events=filtered,
@@ -240,9 +242,9 @@ class ParsingHandler(StateHandler):
                         event_count=len(filtered),
                         processing_time_sec=batch.processing_time_sec,
                     )
-                elif "_triggerMatch" in batch.events.fields or "_runNumber" in batch.events.fields:
+                elif any(field in batch.events.fields for field in ("_triggerMatch", "_runNumber", "_dataRunNumber")):
                     # Strip trigger fields even when not filtering
-                    clean = {f: batch.events[f] for f in batch.events.fields if f not in ("_triggerMatch", "_runNumber")}
+                    clean = {f: batch.events[f] for f in batch.events.fields if f not in ("_triggerMatch", "_runNumber", "_dataRunNumber")}
                     cleaned_events = ak.zip(clean, depth_limit=1)
                     batch = EventBatch(
                         events=cleaned_events,

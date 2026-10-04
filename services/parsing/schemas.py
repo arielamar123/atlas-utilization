@@ -103,11 +103,23 @@ TRIGGER_BRANCH_SUFFIX = "AuxDyn.TrigMatchedObjects"
 # MC: the data-taking run each event simulates (pileup reweighting), used to
 # pick the event's trigger year.  Inclusive run ranges per year.
 RANDOM_RUN_NUMBER_BRANCH = "EventInfoAuxDyn.RandomRunNumber"
+# Collision data carries the recorded run number separately from the MC
+# pile-up random run number.  Keep the two branch names distinct so callers
+# cannot accidentally use an MC menu for collision data (or vice versa).
+DATA_RUN_NUMBER_BRANCH = "EventInfoAuxDyn.runNumber"
 YEAR_RUN_RANGES = {
     "2015": (276262, 284484),
     "2016": (296939, 311481),
     "2017": (324320, 341649),
     "2018": (348197, 364292),
+}
+
+# The 2024 research release currently contains collision data for these two
+# periods.  These inclusive bounds are the Run-2 data-taking ranges used by
+# the release; do not derive a data menu from a dataset name.
+DATA_YEAR_RUN_RANGES = {
+    "2015": (276262, 284484),
+    "2016": (296939, 311481),
 }
 
 
