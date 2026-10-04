@@ -118,7 +118,9 @@ YEAR_RUN_RANGES = {
 # periods.  These inclusive bounds are the Run-2 data-taking ranges used by
 # the release; do not derive a data menu from a dataset name.
 DATA_YEAR_RUN_RANGES = {
-    "2015": (276262, 284484),
+    # 2015 collision data in the 2024 release starts at run 266904.  The MC
+    # random-run range intentionally remains unchanged above.
+    "2015": (266904, 284484),
     "2016": (296939, 311481),
 }
 

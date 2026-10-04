@@ -35,6 +35,14 @@ def test_data_selects_the_menu_from_each_event_run_number():
     assert "_dataRunNumber" not in selected.fields
 
 
+def test_early_2015_collision_runs_use_the_2015_menu():
+    events = _events([266904], **{E15: [True]})
+
+    selected = apply_trigger_selection(events, parse_mc=False)
+
+    assert ak.to_list(selected.event_id) == [0]
+
+
 def test_data_rejects_cross_year_matches_and_empty_lists():
     events = _events(
         [276300, 300000, 276300],
