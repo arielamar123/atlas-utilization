@@ -60,9 +60,14 @@ def test_unsupported_data_runs_are_rejected_with_diagnostics(caplog):
     assert "unsupported run numbers" in caplog.text
 
 
-def test_missing_data_run_number_and_menu_are_explicit_errors():
-    with pytest.raises(ValueError, match="No readable AnalysisTrigMatch"):
-        apply_trigger_selection(ak.Array({"_dataRunNumber": [276300]}))
+def test_missing_data_trigger_metadata_is_explicit_and_non_fatal(caplog):
+    events = ak.Array({"event_id": [1], "_dataRunNumber": [276300]})
+    selected = apply_trigger_selection(events, parse_mc=False, file_path="data.root")
+    assert ak.to_list(selected.event_id) == [1]
+    assert "continuing without trigger filtering" in caplog.text
+
+
+def test_missing_data_run_number_is_an_error():
 
     with pytest.raises(ValueError, match="runNumber"):
         apply_trigger_selection(ak.Array({"_triggerMatch": {E15: [True]}}))

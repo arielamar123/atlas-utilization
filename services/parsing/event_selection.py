@@ -165,7 +165,21 @@ def apply_trigger_selection(
             "the stored trigger containers cannot be used as event matches"
         )
         if not parse_mc:
-            raise ValueError(message)
+            # The 2015/2016 research data currently publishes opaque
+            # TrigComposite containers but not the matching decorations.
+            # Keep the file usable, but make the loss of trigger filtering
+            # explicit; never turn unavailable metadata into a physics-level
+            # false result or claim that these events passed a match.
+            logger.error(
+                "%s; continuing without trigger filtering for this file",
+                message,
+            )
+            particle_fields = {
+                f: events[f]
+                for f in events.fields
+                if f not in ("_triggerMatch", "_runNumber", "_dataRunNumber")
+            }
+            return ak.zip(particle_fields, depth_limit=1)
         logger.warning(
             "%s (%d MC events dropped)", message, len(events),
         )
