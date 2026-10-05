@@ -160,9 +160,10 @@ def apply_trigger_selection(
 
     if "_triggerMatch" not in events.fields:
         message = (
-            f"No readable AnalysisTrigMatch '*{schemas.TRIGGER_BRANCH_SUFFIX}' "
-            f"branches were found in collision-data file {file_path}; "
-            "the stored trigger containers cannot be used as event matches"
+            "No configured AnalysisTrigMatch "
+            f"'*{schemas.TRIGGER_BRANCH_SUFFIX}' branch was readable in "
+            f"collision-data file {file_path}; the file may contain match "
+            "decorations for other trigger chains"
         )
         if not parse_mc:
             # The 2015/2016 research data currently publishes opaque
@@ -170,7 +171,7 @@ def apply_trigger_selection(
             # Keep the file usable, but make the loss of trigger filtering
             # explicit; never turn unavailable metadata into a physics-level
             # false result or claim that these events passed a match.
-            logger.error(
+            logger.warning(
                 "%s; continuing without trigger filtering for this file",
                 message,
             )

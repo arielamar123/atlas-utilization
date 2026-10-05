@@ -1,5 +1,7 @@
 """Focused regression coverage for data/MC trigger-menu selection."""
 
+import logging
+
 import pytest
 
 ak = pytest.importorskip("awkward")
@@ -72,6 +74,8 @@ def test_missing_data_trigger_metadata_is_explicit_and_non_fatal(caplog):
     events = ak.Array({"event_id": [1], "_dataRunNumber": [276300]})
     selected = apply_trigger_selection(events, parse_mc=False, file_path="data.root")
     assert ak.to_list(selected.event_id) == [1]
+    assert caplog.records[-1].levelno == logging.WARNING
+    assert "No configured AnalysisTrigMatch" in caplog.text
     assert "continuing without trigger filtering" in caplog.text
 
 
