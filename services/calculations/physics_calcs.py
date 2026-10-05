@@ -85,7 +85,6 @@ def group_by_final_state(events: ak.Array) -> Iterator[Tuple[str, ak.Array]]:
     for fs in unique_fs:
         mask = (ak.Array(all_events_fs) == fs)
         events_matching_fs = events[mask]
-        fs = limit_particles_in_fs(fs, 4)
         yield (fs, events_matching_fs)
 
 
@@ -94,8 +93,8 @@ def limit_particles_in_fs(final_state: str, threshold: int) -> str:
     for str_amount_particle in fs_particles:
         if len(str_amount_particle) < 2:
             continue
-        amount_to_calc = str_amount_particle[0]
-        particle_letter = str_amount_particle[1]
+        amount_to_calc = str_amount_particle[:-1]
+        particle_letter = str_amount_particle[-1]
         if amount_to_calc.isdigit():
             amount = int(amount_to_calc)
             if amount > threshold:
@@ -109,27 +108,20 @@ def is_finalstate_contain_combination(final_state: str, combination: Dict) -> bo
     Check whether a final state has enough particles to satisfy a combination.
     Works with both plain-int and (count, start_index) combination values.
     """
-    fs_particles = final_state.split('_')
-    for str_amount_particle in fs_particles:
+    available = {}
+    for str_amount_particle in final_state.split('_'):
         if len(str_amount_particle) < 2:
             continue
-        amount_to_calc = str_amount_particle[0]
-        particle_letter = str_amount_particle[1]
+        amount_to_calc = str_amount_particle[:-1]
+        particle_letter = str_amount_particle[-1]
         particle = consts.LETTER_PARTICLE_MAPPING.get(particle_letter)
+        if particle is not None and amount_to_calc.isdigit():
+            available[particle] = int(amount_to_calc)
 
-        if particle is None or particle not in combination:
-            continue
-        if not amount_to_calc.isdigit():
-            continue
-
-        fs_particle_amount = int(amount_to_calc)
-        value = combination[particle]
-        count = get_count(value)
-        start = get_start(value)
-        # Need at least start + count particles available
-        if fs_particle_amount < start + count:
-            return False
-    return True
+    return all(
+        available.get(particle_type, 0) >= get_start(value) + get_count(value)
+        for particle_type, value in combination.items()
+    )
 
 
 def filter_events_by_particle_counts(

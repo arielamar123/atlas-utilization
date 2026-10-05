@@ -113,7 +113,7 @@ class MassCalculationHandler(StateHandler):
 
         try:
             eligible_final_states = self._find_eligible_final_states(
-                root_files, mc, IMCalculator, context
+                root_files, mc, IMCalculator, context, all_combinations
             )
             for root_file_path in root_files:
                 try:
@@ -169,6 +169,7 @@ class MassCalculationHandler(StateHandler):
         mc,
         IMCalculator,
         context: PipelineContext,
+        all_combinations: List[Dict],
     ) -> Optional[Set[str]]:
         """Count final states globally before doing invariant-mass calculations.
 
@@ -216,6 +217,7 @@ class MassCalculationHandler(StateHandler):
                     max_k=mc.max_count_particle_in_combination,
                     min_n=mc.min_particles_in_combination,
                     max_n=mc.max_particles_in_combination,
+                    combinations=all_combinations,
                 )
                 global_counts.update(calculator.final_state_counts())
         except Exception as exc:
@@ -374,6 +376,7 @@ class MassCalculationHandler(StateHandler):
             max_k=mc.max_count_particle_in_combination,
             min_n=mc.min_particles_in_combination,
             max_n=mc.max_particles_in_combination,
+            combinations=all_combinations,
         )
 
         created_files: List[str] = []

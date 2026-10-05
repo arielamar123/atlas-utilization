@@ -160,7 +160,7 @@ def _calculate_combination_invariant_mass(
         return None, 'no_events_after_slice'
 
     inv_mass = calculator.calculate_invariant_mass(sliced_events)
-    if not ak.any(inv_mass):
+    if len(inv_mass) == 0:
         return None, 'empty_inv_mass'
 
     return inv_mass, None

@@ -6,7 +6,7 @@ Supports grouping by final state, filtering, and batch processing.
 """
 import awkward as ak
 import vector
-from typing import Dict, Iterator, List
+from typing import Dict, Iterator, List, Optional
 from collections import Counter
 
 from services.calculations import consts, physics_calcs
@@ -20,13 +20,18 @@ class IMCalculator:
     )
 
     def __init__(self, events: ak.Array, min_events_per_fs: int,
-                 min_k: int, max_k: int, min_n: int, max_n: int):
+                 min_k: int, max_k: int, min_n: int, max_n: int,
+                 combinations: Optional[List[Dict]] = None):
         self.events = events
         self.min_events_per_fs = min_events_per_fs
         self.min_k = min_k
         self.max_k = max_k
         self.min_n = min_n
         self.max_n = max_n
+        # Combination bounds describe calculated observables, not allowed
+        # event multiplicities.  When supplied, use the actual combinations
+        # to determine whether a final state can produce any invariant mass.
+        self.combinations = combinations
         self._all_events_fs = None
         vector.register_awkward()
 
@@ -78,18 +83,39 @@ class IMCalculator:
                     for (_name, letter, _values), count in zip(present_types, counts)
                 )
                 # This is used to create a mask later on, so we must keep this the same length as the event list.
-                if self._is_valid_fs(counts) else ""
+                if self._is_valid_fs({
+                    name: count
+                    for (name, _letter, _values), count in zip(present_types, counts)
+                }) else ""
                 for counts in zip(*[values for _name, _letter, values in present_types])
             ]
             self._all_events_fs = ak.Array(all_events_fs)
         return self._all_events_fs
 
     def _is_valid_fs(self, particle_counts) -> bool:
-        total_types = [p for p in particle_counts if p > 0]
+        if self.combinations is not None:
+            return any(
+                all(
+                    particle_counts.get(particle_type, 0)
+                    >= get_start(value) + get_count(value)
+                    for particle_type, value in combination.items()
+                )
+                for combination in self.combinations
+            )
+
+        total_types = {
+            particle_type: count
+            for particle_type, count in particle_counts.items()
+            if count > 0
+        }
         if len(total_types) < self.min_n or len(total_types) > self.max_n:
             return False
-        for p in total_types:
-            if p < self.min_k or p > self.max_k:
+        for particle_type, count in total_types.items():
+            # Light jets are intentionally unbounded.  The parsing selection
+            # already limits the aggregate of all non-light-jet objects.
+            if count < self.min_k or (
+                particle_type != "Jets" and count > self.max_k
+            ):
                 return False
         return True
 
@@ -101,7 +127,10 @@ class IMCalculator:
         ]
 
         for fs, _count in fs_by_count_sorted:
-            yield self._limit_particles_in_fs(fs, threshold=4)
+            # Keep exact multiplicities: get_events_for_final_state uses this
+            # value as an exact label, so truncating e.g. 5j to 4j would make
+            # the selected event set empty.
+            yield fs
 
     def final_state_counts(self) -> Counter:
         """Return valid final-state populations before invariant-mass work."""
@@ -120,8 +149,8 @@ class IMCalculator:
         for str_amount_particle in fs_particles:
             if len(str_amount_particle) < 2:
                 continue
-            amount_to_calc = str_amount_particle[0]
-            particle_letter = str_amount_particle[1]
+            amount_to_calc = str_amount_particle[:-1]
+            particle_letter = str_amount_particle[-1]
             if amount_to_calc.isdigit():
                 amount = int(amount_to_calc)
                 if amount > threshold:
@@ -138,28 +167,20 @@ class IMCalculator:
         of each type, not just count.  Works with both plain-int and
         (count, start_index) combination values.
         """
-        fs_particles = final_state.split('_')
-        for str_amount_particle in fs_particles:
+        available = {}
+        for str_amount_particle in final_state.split('_'):
             if len(str_amount_particle) < 2:
                 continue
-            amount_to_calc = str_amount_particle[0]
-            particle_letter = str_amount_particle[1]
-
-            if not amount_to_calc.isdigit():
-                continue
-
+            amount_to_calc = str_amount_particle[:-1]
+            particle_letter = str_amount_particle[-1]
             particle = consts.LETTER_PARTICLE_MAPPING.get(particle_letter)
-            if particle is None or particle not in combination:
-                continue
+            if particle is not None and amount_to_calc.isdigit():
+                available[particle] = int(amount_to_calc)
 
-            fs_particle_amount = int(amount_to_calc)
-            value = combination[particle]
-            count = get_count(value)
-            start = get_start(value)
-            # Need at least start + count particles available in this final state
-            if fs_particle_amount < start + count:
-                return False
-        return True
+        return all(
+            available.get(particle_type, 0) >= get_start(value) + get_count(value)
+            for particle_type, value in combination.items()
+        )
 
     def filter_by_particle_counts(self, events, particle_counts,
                                   is_exact_count=False, is_particle_counts_range=False):
