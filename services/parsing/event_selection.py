@@ -27,10 +27,8 @@ YAML_PARTICLE_KEYS: Dict[str, str] = {
 LIGHT_JET_FIELD = "Jets"
 MAX_NON_JET_OBJECTS = 4
 
-
 class TriggerInformationUnavailableError(RuntimeError):
     """A requested collision-data trigger decision could not be decoded."""
-
 
 def canonical_particle_field_name(key: str) -> str:
     return YAML_PARTICLE_KEYS.get(key.lower(), key)
