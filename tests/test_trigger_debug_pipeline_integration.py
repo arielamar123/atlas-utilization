@@ -234,3 +234,15 @@ def test_file_without_trigger_information_is_skipped_not_fatal(tmp_path, monkeyp
     assert context.parsing_stats.trigger_events_before == 8
     assert context.parsing_stats.trigger_events_after == 3
     assert _counts(tmp_path / "plots" / "trigger_debug") == EXPECTED
+
+
+def test_run_with_no_surviving_events_does_not_write_an_empty_chunk(tmp_path, monkeypatch, caplog):
+    for name in list(FILES):
+        monkeypatch.setitem(FILES, name, _events([(RUN_2015, [18.0], [], set())]))
+    caplog.set_level("INFO")
+
+    context = _run(tmp_path)
+
+    assert context.parsed_files == []
+    assert not list((tmp_path / "parsed_data").glob("*.root"))
+    assert "No events survived the parsing selections" in caplog.text

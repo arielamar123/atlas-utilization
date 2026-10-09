@@ -26,6 +26,7 @@ from services.parsing.event_selection import (
     apply_parsing_event_selection, apply_trigger_selection,
 )
 from services.parsing.schemas import normalize_release_year
+from services.parsing.data_run_filter import filter_collision_files_by_run
 from utils.batching import get_batch_slice_by_year
 from plots.trigger_debug.pipeline_hook import TriggerDebugHook
 
@@ -180,9 +181,13 @@ class ParsingHandler(StateHandler):
             parsing_config.release_years,
             list(metadata.keys()),
         )
+        if enable_trigger_matching and not parsing_config.parse_mc:
+            # Before batch splitting and max_files_to_process, so runs that
+            # the trigger selection rejects in full do not use the file budget.
+            metadata = filter_collision_files_by_run(metadata)
         batch_idx = context.config.batch_job_index
         total_batches = context.config.total_batch_jobs
-        
+
         if batch_idx is not None and total_batches is not None:
             self.logger.info(
                 f"Batch mode: job {batch_idx}/{total_batches}"
@@ -306,7 +311,11 @@ class ParsingHandler(StateHandler):
                 )
                 # Accumulate batch into chunks
                 chunk = self.accumulator.add_batch(batch)
-                
+                if chunk and not chunk.event_count:
+                    # uproot cannot write zero-length jagged branches.
+                    self.logger.info(f"Chunk {chunk.chunk_index} has no events; not saving it")
+                    chunk = None
+
                 if chunk:
                     # Save chunk to disk as ROOT file
                     output_dir = Path(parsing_config.output_path)
@@ -329,6 +338,15 @@ class ParsingHandler(StateHandler):
         
         # Flush remaining events
         final_chunk = self.accumulator.flush()
+        if final_chunk and not final_chunk.event_count:
+            # uproot cannot write zero-length jagged branches.
+            if parsed_files:
+                self.logger.info("Final chunk has no events; not saving it")
+            else:
+                self.logger.warning(
+                    "No events survived the parsing selections; no parsed file is written"
+                )
+            final_chunk = None
         if final_chunk:
             # Save final chunk to disk
             output_dir = Path(parsing_config.output_path)
