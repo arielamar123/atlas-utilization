@@ -9,6 +9,7 @@ build/
 # Pipeline output
 output/
 plots/trigger_matching_plots/generated/
+plots/trigger_debug/generated/
 
 # IDE / editor
 .cursor/
