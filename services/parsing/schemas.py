@@ -124,6 +124,40 @@ DATA_YEAR_RUN_RANGES = {
     "2016": (296939, 311481),
 }
 
+# Collision files do not expose the MC-style, split AuxDyn match decorations
+# to uproot.  Their trigger decisions live in xTrigDecision's EF bitset and
+# the bit-to-chain mapping is embedded in MetaData/TriggerMenuJson_HLT.  Keep
+# the documented physics menu separate from the MC match-decoration menu.
+DATA_SINGLE_LEPTON_TRIGGER_CHAINS = {
+    "2015": {
+        "Electrons": [
+            "HLT_e24_lhmedium_iloose_L1EM20VH",
+            "HLT_e60_lhmedium",
+            "HLT_e120_lhloose",
+        ],
+        "Muons": [
+            "HLT_mu20_iloose_L1MU15",
+            "HLT_mu40",
+        ],
+    },
+    "2016": {
+        "Electrons": [
+            "HLT_e26_lhtight_nod0_ivarloose",
+            "HLT_e60_lhmedium_nod0",
+            "HLT_e140_lhloose_nod0",
+        ],
+        "Muons": [
+            "HLT_mu26_ivarmedium",
+            "HLT_mu50",
+        ],
+    },
+}
+
+TRIGGER_DECISION_SMK_BRANCH = "xTrigDecisionAux./xTrigDecisionAux.smk"
+TRIGGER_DECISION_TAV_BRANCH = "xTrigDecisionAux./xTrigDecisionAux.tav"
+TRIGGER_MENU_KEY_BRANCH = "TriggerMenuJson_HLTAux./TriggerMenuJson_HLTAux.key"
+TRIGGER_MENU_PAYLOAD_BRANCH = "TriggerMenuJson_HLTAux./TriggerMenuJson_HLTAux.payload"
+
 
 RELEASE_TRIGGER_YEARS = {
     "2024r-pp": ["2015", "2016", "2017", "2018"],  # Run-2 PHYSLITE

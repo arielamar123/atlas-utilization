@@ -6,6 +6,7 @@ No orchestration logic, no state management.
 """
 
 import logging
+import json
 import awkward as ak
 import numpy as np
 import itertools
@@ -123,6 +124,10 @@ class FileParser:
             batch_size
         )
         obj_events = FileParser._split_combined_leptons(obj_events, release_year)
+        if enable_trigger_matching and not parse_mc:
+            FileParser._decode_collision_trigger_decisions(
+                root_file, obj_events, file_path
+            )
         if enable_jet_tagging:
             obj_events = FileParser._calculate_btagging_and_split(obj_events, jet_btagging_thresholds)
         # Strip out DirectObjects -- they are not physics objects!
@@ -285,6 +290,26 @@ class FileParser:
             available_trigger = [b for b in trigger_branches if b in tree_branches]
             if available_trigger:
                 obj_branches["_triggerMatch"] = {b: b for b in available_trigger}
+            elif not parse_mc:
+                # PHYSLITE publishes AnalysisTrigMatch as opaque
+                # DataVector<xAOD::TrigComposite_v1> branches.  They are
+                # genuine trigger-match containers, but are not the split
+                # AuxDyn decorations this uproot parser requires.  Preserve
+                # that fact so trigger selection reports unavailable physics
+                # metadata rather than silently treating every event as pass.
+                raw_trigger_containers = sorted(
+                    branch
+                    for branch in tree_branches
+                    if branch.startswith("AnalysisTrigMatch_HLT_")
+                    and not branch.endswith("Aux.")
+                )
+                if raw_trigger_containers:
+                    logging.warning(
+                        "Found %d opaque AnalysisTrigMatch TrigComposite "
+                        "containers in collision-data file; using its readable "
+                        "xTrigDecision TAV bitset for event-level trigger selection",
+                        len(raw_trigger_containers),
+                    )
             # Do not infer the data/MC mode from branch availability.  The
             # pipeline configuration is authoritative and collision data can
             # contain both run-number decorations.
@@ -292,6 +317,13 @@ class FileParser:
                 obj_branches["_runNumber"] = {schemas.RANDOM_RUN_NUMBER_BRANCH: "_runNumber"}
             elif not parse_mc and schemas.DATA_RUN_NUMBER_BRANCH in tree_branches:
                 obj_branches["_dataRunNumber"] = {schemas.DATA_RUN_NUMBER_BRANCH: "_dataRunNumber"}
+            if not parse_mc:
+                decision_branches = {
+                    schemas.TRIGGER_DECISION_SMK_BRANCH: "smk",
+                    schemas.TRIGGER_DECISION_TAV_BRANCH: "tav",
+                }
+                if all(branch in tree_branches for branch in decision_branches):
+                    obj_branches["_triggerDecisionRaw"] = decision_branches
 
         return obj_branches
 
@@ -508,7 +540,7 @@ class FileParser:
                 bp: qty for bp, qty in branch_mapping.items()
                 if bp in accessible_set
             }
-            if obj_name in ("DirectObjects", "_triggerMatch", "_runNumber", "_dataRunNumber"):
+            if obj_name in ("DirectObjects", "_triggerMatch", "_runNumber", "_dataRunNumber", "_triggerDecisionRaw"):
                 # These are not particle types — skip the inv-mass field check.
                 if accessible_branches:
                     accessible_obj_branches[obj_name] = accessible_branches
@@ -599,6 +631,11 @@ class FileParser:
                     result[obj_name] = concatenated[schemas.RANDOM_RUN_NUMBER_BRANCH]
                 elif obj_name == "_dataRunNumber":
                     result[obj_name] = concatenated[schemas.DATA_RUN_NUMBER_BRANCH]
+                elif obj_name == "_triggerDecisionRaw":
+                    result[obj_name] = ak.zip({
+                        quantity: concatenated[full_branch]
+                        for full_branch, quantity in obj_branches[obj_name].items()
+                    }, depth_limit=1)
                 else:
                     result[obj_name] = ak.zip({
                         quantity: concatenated[full_branch]
@@ -606,6 +643,63 @@ class FileParser:
                     })
         
         return result, read_error
+
+    @staticmethod
+    def _decode_collision_trigger_decisions(root_file, obj_events: dict, file_path: str) -> None:
+        """Decode xTrigDecision EF bits using the file's TriggerMenuJson_HLT.
+
+        This is deliberately collision-data-only.  MC continues to use its
+        existing AnalysisTrigMatch parsing path without alteration.
+        """
+        raw = obj_events.pop("_triggerDecisionRaw", None)
+        if raw is None:
+            return
+        try:
+            metadata = root_file["MetaData"]
+            menu = metadata.arrays(
+                [schemas.TRIGGER_MENU_KEY_BRANCH, schemas.TRIGGER_MENU_PAYLOAD_BRANCH],
+                library="ak",
+            )
+            keys = ak.to_list(menu[schemas.TRIGGER_MENU_KEY_BRANCH])[0]
+            payloads = ak.to_list(menu[schemas.TRIGGER_MENU_PAYLOAD_BRANCH])[0]
+            menus = {
+                int(key): json.loads(payload)
+                for key, payload in zip(keys, payloads)
+            }
+        except Exception as error:
+            raise ValueError(
+                f"Could not read TriggerMenuJson_HLT metadata in collision-data file {file_path}"
+            ) from error
+
+        configured = sorted({
+            chain
+            for by_object in schemas.DATA_SINGLE_LEPTON_TRIGGER_CHAINS.values()
+            for chains in by_object.values()
+            for chain in chains
+        })
+        smks = ak.to_list(raw["smk"])
+        passed_words = ak.to_list(raw["tav"])
+        decoded = {chain: [] for chain in configured}
+        missing_by_smk: dict[int, set[str]] = {}
+        for smk, words in zip(smks, passed_words):
+            trigger_menu = menus.get(int(smk), {}).get("chains", {})
+            for chain in configured:
+                entry = trigger_menu.get(chain)
+                if entry is None:
+                    decoded[chain].append(False)
+                    missing_by_smk.setdefault(int(smk), set()).add(chain)
+                    continue
+                counter = int(entry["counter"])
+                word, bit = divmod(counter, 32)
+                decoded[chain].append(word < len(words) and bool(int(words[word]) & (1 << bit)))
+        for smk, missing in missing_by_smk.items():
+            logging.info(
+                "Trigger menu SMK %d in %s lacks configured chains: %s",
+                smk, file_path, sorted(missing),
+            )
+        obj_events["_triggerDecision"] = ak.zip({
+            chain: ak.Array(values) for chain, values in decoded.items()
+        })
     
     @staticmethod
     def _auto_detect_branches(
