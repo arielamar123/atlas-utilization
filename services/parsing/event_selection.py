@@ -228,6 +228,7 @@ def apply_trigger_selection(
     # Build per-event booleans: did any electron / muon chain of the event's year fire?
     electron_pass = ak.zeros_like(ak.Array([False] * len(events)))
     muon_pass = ak.zeros_like(ak.Array([False] * len(events)))
+    data_chain_masks: list[tuple[str, str, str, ak.Array]] = []
     for year, in_year in trigger_years:
         if year not in chain_defs:
             raise ValueError(
@@ -258,11 +259,17 @@ def apply_trigger_selection(
         for chain in available_electrons:
             full_branch = chain + schemas.TRIGGER_BRANCH_SUFFIX if parse_mc else chain
             if full_branch in trig.fields:
-                electron_pass = electron_pass | (in_year & trig[full_branch])
+                chain_mask = in_year & trig[full_branch]
+                electron_pass = electron_pass | chain_mask
+                if not parse_mc:
+                    data_chain_masks.append((year, "electron", chain, chain_mask))
         for chain in available_muons:
             full_branch = chain + schemas.TRIGGER_BRANCH_SUFFIX if parse_mc else chain
             if full_branch in trig.fields:
-                muon_pass = muon_pass | (in_year & trig[full_branch])
+                chain_mask = in_year & trig[full_branch]
+                muon_pass = muon_pass | chain_mask
+                if not parse_mc:
+                    data_chain_masks.append((year, "muon", chain, chain_mask))
 
     # Event passes if any lepton trigger fired.  Unsupported data run numbers
     # have no year mask and are consequently rejected explicitly.
@@ -278,6 +285,20 @@ def apply_trigger_selection(
             ak.num(events["Muons"]) > 0
             if "Muons" in events.fields else ak.zeros_like(muon_pass)
         )
+        for year, flavour, chain, chain_mask in data_chain_masks:
+            offline_mask = (
+                ak.num(events["Electrons"]) > 0
+                if flavour == "electron" and "Electrons" in events.fields
+                else ak.num(events["Muons"]) > 0
+                if flavour == "muon" and "Muons" in events.fields
+                else ak.zeros_like(chain_mask)
+            )
+            fired = int(ak.sum(chain_mask))
+            with_offline_lepton = int(ak.sum(chain_mask & offline_mask))
+            logger.info(
+                "Collision trigger %s (%s, %s): %d fired; %d with an offline %s",
+                chain, year, file_path, fired, with_offline_lepton, flavour,
+            )
     event_mask = electron_pass | muon_pass
 
     # Log trigger efficiency
