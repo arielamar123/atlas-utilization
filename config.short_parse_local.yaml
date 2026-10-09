@@ -18,6 +18,8 @@ tasks:
   do_mass_calculating: false
   do_post_processing: false
   do_histogram_creation: false
+trigger_config:
+  enabled: false
 testing_config:
   is_on: false
   test_run_index: null

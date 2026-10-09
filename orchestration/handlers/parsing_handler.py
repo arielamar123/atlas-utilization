@@ -154,6 +154,12 @@ class ParsingHandler(StateHandler):
         
         trigger_cfg = getattr(context.config, "trigger_config", None) or {}
         enable_trigger_matching = trigger_cfg.get("enabled", False)
+        if not isinstance(enable_trigger_matching, bool):
+            raise ValueError("trigger_config.enabled must be a boolean")
+        self.logger.info(
+            "Lepton trigger selection is %s",
+            "ENABLED" if enable_trigger_matching else "DISABLED",
+        )
 
         start_time = datetime.now()
         stats_collector = ParsingStatisticsCollector()
@@ -223,6 +229,7 @@ class ParsingHandler(StateHandler):
                 # Apply single-lepton trigger matching if enabled,
                 # and always strip _triggerMatch before kinematic cuts
                 if enable_trigger_matching:
+                    events_before_trigger = len(batch.events)
                     filtered = apply_trigger_selection(
                         batch.events,
                         release_year=release_year,
@@ -241,6 +248,9 @@ class ParsingHandler(StateHandler):
                         ),
                         event_count=len(filtered),
                         processing_time_sec=batch.processing_time_sec,
+                    )
+                    stats_collector.record_trigger_selection(
+                        events_before_trigger, len(filtered)
                     )
                 elif any(field in batch.events.fields for field in ("_triggerMatch", "_runNumber", "_dataRunNumber")):
                     # Strip trigger fields even when not filtering
@@ -337,13 +347,21 @@ class ParsingHandler(StateHandler):
             max_memory_mb=0.0,  # TODO: track memory
             total_time_sec=(end_time - start_time).total_seconds(),
             start_time=start_time,
-            end_time=end_time
+            end_time=end_time,
+            trigger_events_before=stats_summary["trigger_events_before"],
+            trigger_events_after=stats_summary["trigger_events_after"],
         )
         
         self.logger.info(
             f"Parsing complete: {parsing_stats.successful_files}/{parsing_stats.total_files} files, "
             f"{parsing_stats.total_events} events, {parsing_stats.success_rate:.1f}% success rate"
         )
+        if enable_trigger_matching:
+            self.logger.info(
+                "Lepton trigger selection retained %d / %d parsed events",
+                stats_summary["trigger_events_after"],
+                stats_summary["trigger_events_before"],
+            )
         
         # Update context
         updated_context = context.with_parsed_files(parsed_files).with_parsing_stats(parsing_stats)

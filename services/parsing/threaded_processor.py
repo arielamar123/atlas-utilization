@@ -266,6 +266,8 @@ class ParsingStatisticsCollector:
         self.total_size_bytes = 0
         self.failed_files = []
         self.processing_times = []
+        self.trigger_events_before = 0
+        self.trigger_events_after = 0
     
     def record_success(self, file_url: str, event_count: int, size_bytes: int, time_sec: float):
         """Record a successful parse."""
@@ -285,6 +287,12 @@ class ParsingStatisticsCollector:
                 self.total_events += len(partial_events)
                 if hasattr(partial_events, "layout"):
                     self.total_size_bytes += partial_events.layout.nbytes
+
+    def record_trigger_selection(self, before: int, after: int):
+        """Record the explicit effect of enabled lepton-trigger filtering."""
+        with self.lock:
+            self.trigger_events_before += before
+            self.trigger_events_after += after
     
     def get_summary(self) -> dict:
         """Get statistics summary."""
@@ -305,5 +313,7 @@ class ParsingStatisticsCollector:
                 "total_events": self.total_events,
                 "total_size_mb": self.total_size_bytes / (1024 * 1024),
                 "average_processing_time_sec": avg_time,
-                "failed_file_list": self.failed_files
+                "failed_file_list": self.failed_files,
+                "trigger_events_before": self.trigger_events_before,
+                "trigger_events_after": self.trigger_events_after,
             }

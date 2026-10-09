@@ -68,6 +68,8 @@ class ParsingStatistics:
     # Errors (immutable tuple of error messages)
     error_types: tuple[tuple[str, int], ...] = field(default_factory=tuple)
     timeout_count: int = 0
+    trigger_events_before: int = 0
+    trigger_events_after: int = 0
     
     def __post_init__(self):
         """Validate parsing statistics."""
@@ -118,6 +120,8 @@ class ParsingStatistics:
             "total_time_sec": f"{self.total_time_sec:.1f}",
             "average_events_per_file": f"{self.average_events_per_file:.0f}",
             "timeout_count": self.timeout_count,
+            "trigger_events_before": self.trigger_events_before,
+            "trigger_events_after": self.trigger_events_after,
             "error_types": {error_type: count for error_type, count in self.error_types},
             "start_time": self.start_time.isoformat(),
             "end_time": self.end_time.isoformat(),

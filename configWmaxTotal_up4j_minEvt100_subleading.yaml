@@ -27,6 +27,9 @@ tasks:
   do_post_processing: true
   do_histogram_creation: true
 
+trigger_config:
+  enabled: false
+
 testing_config:
   is_on: false
   test_run_index: null
