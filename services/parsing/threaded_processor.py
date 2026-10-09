@@ -142,9 +142,11 @@ class ThreadedFileProcessor:
         """
         Parse a single file with retry + backoff on timeout errors.
 
-        Retries up to 3 times with increasing wait (30s, 60s, 120s),
-        then skips the file so one dead xrootd connection doesn't
-        stall the entire batch.
+        Retries network/read failures (the parser returns None) up to 3
+        times with increasing wait (30s, 60s, 120s), then skips the file so
+        one dead xrootd connection doesn't stall the entire batch.  A
+        deterministic content error (InvalidFileContentError) is raised at
+        once: process_files logs it and records the file as failed.
         """
         import time
         max_retries = 3

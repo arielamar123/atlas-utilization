@@ -259,6 +259,10 @@ class PipelineExecutor:
                 json.dump(aggregated, f, indent=2, default=str)
             self.logger.info(f"Aggregated stats saved to: {agg_path}")
 
+        # ---- 2b. Combine per-batch real-data trigger debug output ----
+        from plots.trigger_debug.pipeline_hook import merge_batch_outputs
+        merge_batch_outputs(run_dir)
+
         # ---- 3. Generate plots ----
         self.generate_plots_from_output(run_dir)
 

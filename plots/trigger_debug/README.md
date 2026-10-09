@@ -1,11 +1,28 @@
 # Real-data lepton-trigger debugging
 
-This is deliberately isolated from the pipeline so it can be deleted once the
-collision-data trigger investigation is complete.  It does not change MC
-trigger matching or production event selection.
+These diagnostics run automatically during `python main.py` when parsing
+collision data (`parse_mc: false`) with `trigger_config.enabled: true`.  No
+extra command is needed.  They do not change MC trigger matching or the
+production event selection.  For MC runs or with trigger selection disabled,
+the parsing log says why the plots were skipped.
 
-Run inside the project Docker container, supplying at least one 2015 and one
-2016 PHYSLITE file:
+The parsing handler passes each parsed batch to `pipeline_hook.py` *before*
+`apply_trigger_selection()`.  Counts and histograms therefore cover the same
+pre-selection events, accumulated over every file in the run.
+
+Pipeline output goes to `<run_dir>/plots/trigger_debug/`.  Batch jobs
+(`--batch-job-index N`) write to `batch_N/` in that directory, along with
+`trigger_debug_state.npz`.  `python main.py --merge-only --run-dir <run_dir>`
+then merges every batch into the parent directory.
+
+To remove the diagnostics, delete this directory and the `TriggerDebugHook` /
+`merge_batch_outputs` calls in `orchestration/handlers/parsing_handler.py` and
+`pipeline/executor.py`.
+
+## Standalone use
+
+The module can also be run on chosen files, inside the project Docker
+container:
 
 ```bash
 python -m plots.trigger_debug.real_data_trigger_debug \
@@ -13,7 +30,7 @@ python -m plots.trigger_debug.real_data_trigger_debug \
   --input 'ROOT_URI_FOR_A_2016_FILE'
 ```
 
-Output is written to `plots/trigger_debug/generated/`:
+Standalone output is written to `plots/trigger_debug/generated/`.  Both modes produce:
 
 - `trigger_counts.txt` and `trigger_counts.csv` are the authoritative,
   per-chain counters.
@@ -27,7 +44,7 @@ It is a debugging reference, not an offline-cut boundary: trigger ID,
 isolation, L1 seed, detector response, and the event-level nature of readable
 `xTrigDecision` bits mean the distributions need not turn on sharply there.
 
-The current real-data selection decodes `xTrigDecision.TAV` bits and requires
-an offline lepton of the corresponding flavour.  It cannot inspect the raw
-PHYSLITE `AnalysisTrigMatch` ElementLinks with uproot, so these plots do not
-claim object-level matching.
+An event passes a chain, as in the real-data selection, when the chain's HLT
+physics decision (`xTrigDecision.efPassedPhysics`) fired and an offline lepton
+is trigger-matched to it (`AnalysisTrigMatch_<chain>AuxDyn.TrigMatchedObjects`,
+as in MC).  Only runs inside the MC-modelled ranges are counted.

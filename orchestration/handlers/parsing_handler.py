@@ -22,10 +22,12 @@ from services.parsing.threaded_processor import ThreadedFileProcessor, ParsingSt
 from domain.statistics import ParsingStatistics
 from domain.events import EventBatch
 from services.parsing.event_selection import (
+    TriggerInformationUnavailableError,
     apply_parsing_event_selection, apply_trigger_selection,
 )
 from services.parsing.schemas import normalize_release_year
 from utils.batching import get_batch_slice_by_year
+from plots.trigger_debug.pipeline_hook import TriggerDebugHook
 
 
 def select_metadata_for_parsing(
@@ -186,6 +188,10 @@ class ParsingHandler(StateHandler):
                 f"Batch mode: job {batch_idx}/{total_batches}"
             )
             metadata = get_batch_slice_by_year(metadata, batch_idx, total_batches)
+
+        trigger_debug = TriggerDebugHook.from_parsing(
+            parsing_config, enable_trigger_matching, batch_idx
+        )
         
         # ---- Apply max_files_to_process limit (per year) ----
         max_files = getattr(parsing_config, 'max_files_to_process', None)
@@ -230,12 +236,23 @@ class ParsingHandler(StateHandler):
                 # and always strip _triggerMatch before kinematic cuts
                 if enable_trigger_matching:
                     events_before_trigger = len(batch.events)
-                    filtered = apply_trigger_selection(
-                        batch.events,
-                        release_year=release_year,
-                        file_path=batch.file_url,
-                        parse_mc=parsing_config.parse_mc,
-                    )
+                    try:
+                        filtered = apply_trigger_selection(
+                            batch.events,
+                            release_year=release_year,
+                            file_path=batch.file_url,
+                            parse_mc=parsing_config.parse_mc,
+                        )
+                    except TriggerInformationUnavailableError as error:
+                        # Raised for collision data only: skip this file's
+                        # events rather than stopping the whole run.
+                        self.logger.warning(
+                            "Skipping %d events of %s: %s",
+                            events_before_trigger, batch.file_url, error,
+                        )
+                        stats_collector.record_trigger_selection(events_before_trigger, 0)
+                        continue
+                    trigger_debug.observe(batch.events)
                     batch = EventBatch(
                         events=filtered,
                         file_id=batch.file_id,
@@ -362,6 +379,7 @@ class ParsingHandler(StateHandler):
                 stats_summary["trigger_events_after"],
                 stats_summary["trigger_events_before"],
             )
+        trigger_debug.finish()
         
         # Update context
         updated_context = context.with_parsed_files(parsed_files).with_parsing_stats(parsing_stats)

@@ -1,5 +1,7 @@
-"""Temporary, standalone diagnostics for collision-data lepton triggers.
+"""Temporary diagnostics for collision-data lepton triggers.
 
-Nothing in the production parsing path imports this package.  Delete this
-directory when the trigger investigation is complete.
+The parsing stage calls only ``pipeline_hook``; it never changes parsing
+results.  To remove the diagnostics, delete this directory and the
+``TriggerDebugHook`` / ``merge_batch_outputs`` calls in
+``orchestration/handlers/parsing_handler.py`` and ``pipeline/executor.py``.
 """

@@ -30,6 +30,17 @@ class PartialFileReadError(RuntimeError):
         )
 
 
+class InvalidFileContentError(ValueError):
+    """The file was read, but its content cannot be parsed; retrying cannot help."""
+
+
+def is_transient_read_error(error: BaseException) -> bool:
+    """True for network/IO failures that a retry may fix (not a missing file)."""
+    if isinstance(error, (FileNotFoundError, IsADirectoryError, PermissionError)):
+        return False
+    return isinstance(error, (OSError, EOFError))
+
+
 class FileParser:
     """
     Service for parsing individual ROOT files.
@@ -58,7 +69,12 @@ class FileParser:
             batch_size: Number of entries to process per batch
             
         Returns:
-            Awkward array of events with particle objects, or None if parsing failed
+            Awkward array of events with particle objects, or None after a
+            network/read failure (the caller may retry).
+
+        Raises:
+            InvalidFileContentError: the file's content cannot be parsed;
+                retrying cannot help.
         """
         try:
             with open_root_file(file_path) as root_file:
@@ -73,11 +89,15 @@ class FileParser:
                     enable_trigger_matching,
                     parse_mc,
                 )
-        except PartialFileReadError:
+        except (PartialFileReadError, InvalidFileContentError):
             raise
         except Exception as e:
-            logging.warning(f"Failed to parse file {file_path}: {e}")
-            return None
+            if is_transient_read_error(e):
+                logging.warning(f"Failed to read file {file_path}: {e}")
+                return None
+            raise InvalidFileContentError(
+                f"Cannot parse {file_path}: {type(e).__name__}: {e}"
+            ) from e
     
     @staticmethod
     def _parse_opened_file(
@@ -106,28 +126,33 @@ class FileParser:
         )
 
         if not obj_branches:
-            logging.warning(f"No particles found in schema for file {file_path}")
-            return None
-        
+            raise InvalidFileContentError(f"No particles found in schema for file {file_path}")
+
         obj_branches = FileParser._filter_accessible_branches(tree, obj_branches)
-        
+
         if not obj_branches:
-            logging.warning(f"No accessible particles found in file {file_path}")
-            return None
-        
+            raise InvalidFileContentError(f"No accessible particles found in file {file_path}")
+        if enable_trigger_matching and not parse_mc:
+            FileParser._require_collision_trigger_branches(obj_branches, file_path)
+
         all_branches = set(itertools.chain.from_iterable(obj_branches.values()))
+        batch_reducers = None
+        if enable_trigger_matching and not parse_mc and "_triggerDecisionRaw" in obj_branches:
+            batch_reducers = {
+                "_triggerDecisionRaw": (
+                    "_triggerDecision",
+                    FileParser._collision_trigger_reducer(root_file, file_path),
+                )
+            }
         obj_events, read_error = FileParser._read_file_in_batches(
             tree,
             all_branches,
             obj_branches,
             n_entries,
-            batch_size
+            batch_size,
+            batch_reducers,
         )
         obj_events = FileParser._split_combined_leptons(obj_events, release_year)
-        if enable_trigger_matching and not parse_mc:
-            FileParser._decode_collision_trigger_decisions(
-                root_file, obj_events, file_path
-            )
         if enable_jet_tagging:
             obj_events = FileParser._calculate_btagging_and_split(obj_events, jet_btagging_thresholds)
         # Strip out DirectObjects -- they are not physics objects!
@@ -287,29 +312,14 @@ class FileParser:
         # from particle-type fields.
         if enable_trigger_matching:
             trigger_branches = schemas.get_all_trigger_branches()
+            if not parse_mc:
+                # Collision data has the same match decorations as MC; read
+                # the ones of the collision-data menu.  A missing branch means
+                # no lepton matched that chain anywhere in the file.
+                trigger_branches = schemas.get_data_trigger_match_branches()
             available_trigger = [b for b in trigger_branches if b in tree_branches]
             if available_trigger:
                 obj_branches["_triggerMatch"] = {b: b for b in available_trigger}
-            elif not parse_mc:
-                # PHYSLITE publishes AnalysisTrigMatch as opaque
-                # DataVector<xAOD::TrigComposite_v1> branches.  They are
-                # genuine trigger-match containers, but are not the split
-                # AuxDyn decorations this uproot parser requires.  Preserve
-                # that fact so trigger selection reports unavailable physics
-                # metadata rather than silently treating every event as pass.
-                raw_trigger_containers = sorted(
-                    branch
-                    for branch in tree_branches
-                    if branch.startswith("AnalysisTrigMatch_HLT_")
-                    and not branch.endswith("Aux.")
-                )
-                if raw_trigger_containers:
-                    logging.warning(
-                        "Found %d opaque AnalysisTrigMatch TrigComposite "
-                        "containers in collision-data file; using its readable "
-                        "xTrigDecision TAV bitset for event-level trigger selection",
-                        len(raw_trigger_containers),
-                    )
             # Do not infer the data/MC mode from branch availability.  The
             # pipeline configuration is authoritative and collision data can
             # contain both run-number decorations.
@@ -320,9 +330,10 @@ class FileParser:
             if not parse_mc:
                 decision_branches = {
                     schemas.TRIGGER_DECISION_SMK_BRANCH: "smk",
-                    schemas.TRIGGER_DECISION_TAV_BRANCH: "tav",
+                    schemas.TRIGGER_DECISION_HLT_PHYSICS_BRANCH: "hlt_passed_physics",
                 }
-                if all(branch in tree_branches for branch in decision_branches):
+                # Missing branches are reported by _require_collision_trigger_branches.
+                if all(b in tree_branches for b in decision_branches):
                     obj_branches["_triggerDecisionRaw"] = decision_branches
 
         return obj_branches
@@ -521,7 +532,11 @@ class FileParser:
                 library="ak"
             )
             accessible_set = set(test_arr.fields)
-        except Exception:
+        except Exception as error:
+            # A network failure must be retried, not mistaken for an
+            # unreadable branch.
+            if is_transient_read_error(error):
+                raise
             for branch_path in all_candidate_branches:
                 try:
                     test_arr = tree.arrays(
@@ -531,7 +546,9 @@ class FileParser:
                     )
                     if branch_path in test_arr.fields:
                         accessible_set.add(branch_path)
-                except Exception:
+                except Exception as branch_error:
+                    if is_transient_read_error(branch_error):
+                        raise
                     continue
         
         accessible_obj_branches = {}
@@ -557,8 +574,12 @@ class FileParser:
         all_branches: set[str],
         obj_branches: dict[str, dict[str, str]],
         n_entries: int,
-        batch_size: int
+        batch_size: int,
+        batch_reducers: Optional[dict] = None,
     ) -> tuple[dict[str, ak.Array], Optional[Exception]]:
+        # batch_reducers: {obj_name: (output_name, fn)} reduces that object's
+        # branches batch by batch; the concatenated result is stored as-is.
+        batch_reducers = batch_reducers or {}
         obj_events_by_quantities = {
             obj_name: [] for obj_name in obj_branches.keys()
         }
@@ -596,13 +617,17 @@ class FileParser:
                 if available_branches:
                     subset = batch_data[available_branches]
                     if len(subset) > 0:
+                        if obj_name in batch_reducers:
+                            subset = batch_reducers[obj_name][1](subset)
                         obj_events_by_quantities[obj_name].append(subset)
-        
+
         result = {}
         for obj_name, chunks in obj_events_by_quantities.items():
             if chunks:
                 concatenated = ak.concatenate(chunks)
-                if obj_name == "_triggerMatch":
+                if obj_name in batch_reducers:
+                    result[batch_reducers[obj_name][0]] = concatenated
+                elif obj_name == "_triggerMatch":
                     # Trigger branches are ``var * var * ElementLink``.
                     # We collapse each to a single per-event boolean:
                     # True if ANY particle in the event has a non-empty match
@@ -616,26 +641,14 @@ class FileParser:
                         # raw[i] holds one entry per matched combination in event i;
                         # raw[i][j] links the offline particle(s) of combination j.
                         # The event matched if any combination is non-empty.
-                        try:
-                            per_particle_matched = ak.num(raw, axis=2) > 0
-                            trig_fields[full_branch] = ak.any(per_particle_matched, axis=1)
-                        except Exception as error:
-                            raise ValueError(
-                                "Invalid trigger-match structure for "
-                                f"'{full_branch}': expected event -> combination "
-                                f"-> ElementLink arrays"
-                            ) from error
+                        per_particle_matched = ak.num(raw, axis=2) > 0
+                        trig_fields[full_branch] = ak.any(per_particle_matched, axis=1)
                     if trig_fields:
                         result[obj_name] = ak.zip(trig_fields)
                 elif obj_name == "_runNumber":
                     result[obj_name] = concatenated[schemas.RANDOM_RUN_NUMBER_BRANCH]
                 elif obj_name == "_dataRunNumber":
                     result[obj_name] = concatenated[schemas.DATA_RUN_NUMBER_BRANCH]
-                elif obj_name == "_triggerDecisionRaw":
-                    result[obj_name] = ak.zip({
-                        quantity: concatenated[full_branch]
-                        for full_branch, quantity in obj_branches[obj_name].items()
-                    }, depth_limit=1)
                 else:
                     result[obj_name] = ak.zip({
                         quantity: concatenated[full_branch]
@@ -645,61 +658,138 @@ class FileParser:
         return result, read_error
 
     @staticmethod
-    def _decode_collision_trigger_decisions(root_file, obj_events: dict, file_path: str) -> None:
-        """Decode xTrigDecision EF bits using the file's TriggerMenuJson_HLT.
-
-        This is deliberately collision-data-only.  MC continues to use its
-        existing AnalysisTrigMatch parsing path without alteration.
-        """
-        raw = obj_events.pop("_triggerDecisionRaw", None)
-        if raw is None:
-            return
-        try:
-            metadata = root_file["MetaData"]
-            menu = metadata.arrays(
-                [schemas.TRIGGER_MENU_KEY_BRANCH, schemas.TRIGGER_MENU_PAYLOAD_BRANCH],
-                library="ak",
+    def _require_collision_trigger_branches(obj_branches: dict, file_path: str) -> None:
+        """Reject a collision-data file whose trigger selection cannot be evaluated."""
+        readable = {
+            branch
+            for name in ("_triggerDecisionRaw", "_dataRunNumber")
+            for branch in obj_branches.get(name, {})
+        }
+        missing = [
+            branch for branch in (
+                schemas.TRIGGER_DECISION_SMK_BRANCH,
+                schemas.TRIGGER_DECISION_HLT_PHYSICS_BRANCH,
+                schemas.DATA_RUN_NUMBER_BRANCH,
             )
-            keys = ak.to_list(menu[schemas.TRIGGER_MENU_KEY_BRANCH])[0]
-            payloads = ak.to_list(menu[schemas.TRIGGER_MENU_PAYLOAD_BRANCH])[0]
-            menus = {
-                int(key): json.loads(payload)
-                for key, payload in zip(keys, payloads)
-            }
-        except Exception as error:
-            raise ValueError(
-                f"Could not read TriggerMenuJson_HLT metadata in collision-data file {file_path}"
-            ) from error
+            if branch not in readable
+        ]
+        if missing:
+            raise InvalidFileContentError(
+                f"Collision-data file {file_path} lacks readable trigger branches "
+                f"{missing}; its events cannot be trigger-selected"
+            )
 
+    @staticmethod
+    def _collision_trigger_reducer(root_file, file_path: str):
+        """Return a per-batch decoder of xTrigDecision HLT physics bits.
+
+        The 256-word bitsets are decoded batch by batch so that only the
+        configured chains' booleans are kept in memory.  This is deliberately
+        collision-data-only; MC uses its AnalysisTrigMatch parsing path.
+        """
+        menus = FileParser._read_hlt_menus(root_file, file_path)
         configured = sorted({
             chain
             for by_object in schemas.DATA_SINGLE_LEPTON_TRIGGER_CHAINS.values()
             for chains in by_object.values()
             for chain in chains
         })
-        smks = ak.to_list(raw["smk"])
-        passed_words = ak.to_list(raw["tav"])
-        decoded = {chain: [] for chain in configured}
-        missing_by_smk: dict[int, set[str]] = {}
-        for smk, words in zip(smks, passed_words):
-            trigger_menu = menus.get(int(smk), {}).get("chains", {})
-            for chain in configured:
-                entry = trigger_menu.get(chain)
-                if entry is None:
-                    decoded[chain].append(False)
-                    missing_by_smk.setdefault(int(smk), set()).add(chain)
-                    continue
-                counter = int(entry["counter"])
-                word, bit = divmod(counter, 32)
-                decoded[chain].append(word < len(words) and bool(int(words[word]) & (1 << bit)))
-        for smk, missing in missing_by_smk.items():
-            logging.info(
-                "Trigger menu SMK %d in %s lacks configured chains: %s",
-                smk, file_path, sorted(missing),
+        reported: set[int] = set()
+
+        def decode(batch: ak.Array) -> ak.Array:
+            missing = [
+                branch for branch in (
+                    schemas.TRIGGER_DECISION_SMK_BRANCH,
+                    schemas.TRIGGER_DECISION_HLT_PHYSICS_BRANCH,
+                )
+                if branch not in batch.fields
+            ]
+            if missing:
+                raise InvalidFileContentError(
+                    f"Collision-data file {file_path} lacks readable HLT decision branches {missing}"
+                )
+            return FileParser.decode_hlt_physics_decisions(
+                batch[schemas.TRIGGER_DECISION_SMK_BRANCH],
+                batch[schemas.TRIGGER_DECISION_HLT_PHYSICS_BRANCH],
+                menus, configured, file_path, reported,
             )
-        obj_events["_triggerDecision"] = ak.zip({
-            chain: ak.Array(values) for chain, values in decoded.items()
-        })
+
+        return decode
+
+    @staticmethod
+    def _read_hlt_menus(root_file, file_path: str) -> dict:
+        """Read every TriggerMenuJson_HLT entry, keyed by SMK."""
+        try:
+            metadata = root_file["MetaData"]
+            menu = metadata.arrays(
+                [schemas.TRIGGER_MENU_KEY_BRANCH, schemas.TRIGGER_MENU_PAYLOAD_BRANCH],
+                library="ak",
+            )
+            # A merged file can hold one MetaData entry per input file.
+            menus = {
+                int(key): json.loads(payload)
+                for keys, payloads in zip(
+                    ak.to_list(menu[schemas.TRIGGER_MENU_KEY_BRANCH]),
+                    ak.to_list(menu[schemas.TRIGGER_MENU_PAYLOAD_BRANCH]),
+                )
+                for key, payload in zip(keys, payloads)
+            }
+        except Exception as error:
+            if is_transient_read_error(error):
+                raise
+            raise InvalidFileContentError(
+                f"Could not read TriggerMenuJson_HLT metadata in collision-data file "
+                f"{file_path}: {type(error).__name__}: {error}"
+            ) from error
+        if not menus:
+            raise InvalidFileContentError(
+                f"Collision-data file {file_path} has no TriggerMenuJson_HLT menus"
+            )
+        return menus
+
+    @staticmethod
+    def decode_hlt_physics_decisions(
+        smk, passed_words, menus: dict, chains: list[str], file_path: str = "",
+        reported: Optional[set] = None,
+    ) -> ak.Array:
+        """Return one boolean field per chain from per-event HLT bitsets.
+
+        Bit ``counter`` of ``passed_words`` (word ``counter // 32``) is the
+        chain's decision, where ``counter`` comes from the event's own SMK
+        menu.  A chain absent from that menu was not run, so it did not pass.
+        An SMK with no menu in the file is an error: its bits cannot be
+        interpreted.
+        """
+        smk = ak.to_numpy(smk).astype(np.int64)
+        decoded = {chain: np.zeros(len(smk), dtype=bool) for chain in chains}
+        for key in np.unique(smk):
+            if int(key) not in menus:
+                raise InvalidFileContentError(
+                    f"No TriggerMenuJson_HLT entry for SMK {int(key)} in "
+                    f"collision-data file {file_path}; available: {sorted(menus)}"
+                )
+            menu_chains = menus[int(key)].get("chains", {})
+            selected = smk == key
+            words = passed_words[selected]
+            missing = []
+            for chain in chains:
+                entry = menu_chains.get(chain)
+                if entry is None:
+                    missing.append(chain)
+                    continue
+                word_index, bit = divmod(int(entry["counter"]), 32)
+                padded = ak.pad_none(words, word_index + 1, axis=1)
+                word = ak.to_numpy(ak.fill_none(padded[:, word_index], 0)).astype(np.uint64)
+                decoded[chain][selected] = ((word >> bit) & 1).astype(bool)
+            if missing and (reported is None or int(key) not in reported):
+                if reported is not None:
+                    reported.add(int(key))
+                logging.info(
+                    "Trigger menu SMK %d in %s does not contain chains %s; "
+                    "they did not run for its events",
+                    int(key), file_path, missing,
+                )
+        return ak.zip({chain: ak.Array(values) for chain, values in decoded.items()})
     
     @staticmethod
     def _auto_detect_branches(

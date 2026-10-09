@@ -41,7 +41,7 @@ class TriggerDefinition:
 # Keep this table beside the debug plots so removing the diagnostics is a
 # single-directory deletion and cannot affect the production selection.
 _CHAIN_REQUIREMENTS = {
-    "HLT_e24_lhmedium_iloose_L1EM20VH": (24, "medium likelihood ID; loose isolation; L1_EM20VH seed"),
+    "HLT_e24_lhmedium_L1EM20VH": (24, "medium likelihood ID; L1_EM20VH seed"),
     "HLT_e60_lhmedium": (60, "medium likelihood ID"),
     "HLT_e120_lhloose": (120, "loose likelihood ID"),
     "HLT_mu20_iloose_L1MU15": (20, "loose isolation; L1_MU15 seed"),
@@ -90,35 +90,66 @@ class RealDataTriggerDebugger:
     def add_events(self, events: ak.Array) -> None:
         """Add parser output with decoded ``_triggerDecision`` fields.
 
-        The relevant denominator is intentionally event-based: an event must
-        be in the chain's run period and contain at least one offline lepton
-        of its flavour.  This matches the flavour guard in
-        ``apply_trigger_selection``.  It does *not* claim object-level
-        matching because PHYSLITE's raw ElementLink containers are opaque to
-        uproot.
+        The denominator is event-based: an event must be in the chain's run
+        period and contain at least one offline lepton of its flavour.  An
+        event passes a chain as in ``apply_trigger_selection``: the chain's HLT
+        physics decision fired and an offline lepton is matched to it.
         """
-        required = {"_dataRunNumber", "_triggerDecision", "Electrons", "Muons"}
+        required = {"_dataRunNumber", "_triggerDecision"}
         missing = required - set(events.fields)
         if missing:
             raise ValueError(f"Trigger debug input lacks fields: {sorted(missing)}")
 
         runs = events["_dataRunNumber"]
         decisions = events["_triggerDecision"]
+        matches = events["_triggerMatch"] if "_triggerMatch" in events.fields else None
         for observation in self._observations.values():
             definition = observation["definition"]
             assert isinstance(definition, TriggerDefinition)
-            if definition.chain not in decisions.fields:
+            object_name = "Electrons" if definition.flavour == "electron" else "Muons"
+            if definition.chain not in decisions.fields or object_name not in events.fields:
                 continue
             low, high = schemas.DATA_YEAR_RUN_RANGES[definition.year]
-            object_name = "Electrons" if definition.flavour == "electron" else "Muons"
             relevant = (runs >= low) & (runs <= high) & (ak.num(events[object_name]) > 0)
             if not bool(ak.any(relevant)):
                 continue
             relevant_events = events[relevant]
             pt = _leading_pt_gev(relevant_events, object_name)
             fired = ak.to_numpy(relevant_events["_triggerDecision"][definition.chain])
+            branch = schemas.data_trigger_match_branch(definition.chain)
+            if matches is not None and branch in matches.fields:
+                fired = fired & ak.to_numpy(relevant_events["_triggerMatch"][branch])
+            else:
+                fired = np.zeros(len(fired), dtype=bool)
             observation["pass"].append(pt[fired])
             observation["fail"].append(pt[~fired])
+
+    def save_state(self, path: str | Path) -> None:
+        """Persist the raw pass/fail pT values so batch jobs can be merged."""
+        arrays = {}
+        for chain, observation in self._observations.items():
+            arrays[f"{chain}__pass"] = self._joined(observation["pass"])
+            arrays[f"{chain}__fail"] = self._joined(observation["fail"])
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(path, **arrays)
+
+    def load_state(self, path: str | Path) -> None:
+        """Add values written by :meth:`save_state` to this accumulator."""
+        with np.load(path) as saved:
+            for chain, observation in self._observations.items():
+                for outcome in ("pass", "fail"):
+                    key = f"{chain}__{outcome}"
+                    if key in saved.files:
+                        observation[outcome].append(saved[key])
+
+    def plot_paths(self) -> list[Path]:
+        """Return the PNG files :meth:`write` produces for non-empty chains."""
+        paths = []
+        for row in self._rows():
+            if row["relevant_events"]:
+                paths.append(self.output_dir / f"{row['chain']}_leading_pt.png")
+                paths.append(self.output_dir / f"{row['chain']}_response.png")
+        return paths
 
     @staticmethod
     def _joined(values: list[np.ndarray]) -> np.ndarray:
@@ -152,9 +183,9 @@ class RealDataTriggerDebugger:
         edges = np.linspace(0, self.pt_max_gev, self.bins + 1)
         fig, ax = plt.subplots(figsize=(9, 6))
         ax.hist(failed, bins=edges, histtype="stepfilled", alpha=0.45,
-                color="tab:red", label=f"did not fire ({len(failed):,})")
+                color="tab:red", label=f"not retained ({len(failed):,})")
         ax.hist(passed, bins=edges, histtype="step", linewidth=2,
-                color="tab:blue", label=f"fired / retained ({len(passed):,})")
+                color="tab:blue", label=f"fired & matched / retained ({len(passed):,})")
         ax.axvline(float(row["threshold_gev"]), color="black", linestyle="--", linewidth=1.5,
                    label=f"nominal HLT threshold ({row['threshold_gev']} GeV)")
         ax.set(xlabel=f"Leading offline {row['flavour']} $p_T$ [GeV]", ylabel="Events",
@@ -166,7 +197,7 @@ class RealDataTriggerDebugger:
         plt.close(fig)
 
     def _plot_efficiency(self, row: dict[str, str | int | float]) -> None:
-        """Plot fired fraction versus the same pT quantity as the histogram."""
+        """Plot the retained fraction versus the same pT quantity as the histogram."""
         observation = self._observations[str(row["chain"])]
         passed, failed = self._joined(observation["pass"]), self._joined(observation["fail"])
         all_pt = np.concatenate((passed, failed))
@@ -178,9 +209,9 @@ class RealDataTriggerDebugger:
         efficiency = np.divide(numerator, denominator, out=np.full(self.bins, np.nan), where=denominator > 0)
         centers = (edges[1:] + edges[:-1]) / 2
         fig, ax = plt.subplots(figsize=(9, 4.5))
-        ax.step(centers, efficiency, where="mid", color="tab:blue", label="event-level fired fraction")
+        ax.step(centers, efficiency, where="mid", color="tab:blue", label="fired & matched fraction")
         ax.axvline(float(row["threshold_gev"]), color="black", linestyle="--", label="nominal HLT threshold")
-        ax.set(xlabel=f"Leading offline {row['flavour']} $p_T$ [GeV]", ylabel="Fired / relevant events",
+        ax.set(xlabel=f"Leading offline {row['flavour']} $p_T$ [GeV]", ylabel="Retained / relevant events",
                ylim=(-0.05, 1.05), title=f"{row['chain']} trigger response")
         ax.legend()
         ax.grid(alpha=0.2)
@@ -200,14 +231,15 @@ class RealDataTriggerDebugger:
         with (self.output_dir / "trigger_counts.txt").open("w", encoding="utf-8") as output:
             output.write("Real-data trigger debug counts\n")
             output.write("Relevant = in the chain's run range and has >=1 offline lepton of its flavour.\n")
-            output.write("Passed chain is the readable xTrigDecision TAV decision; counts match each plot legend.\n\n")
+            output.write("Passed chain = HLT physics decision (efPassedPhysics) fired AND an offline lepton "
+                         "is trigger-matched; counts match each plot legend.\n\n")
             for row in rows:
                 output.write(
                     f"{row['chain']} ({row['year']} {row['flavour']}; {row['requirements']})\n"
                     f"  nominal threshold: {row['threshold_gev']} GeV\n"
                     f"  relevant events: {row['relevant_events']}\n"
-                    f"  fired / retained: {row['passed_chain']}\n"
-                    f"  did not fire: {row['did_not_pass_chain']}\n\n"
+                    f"  fired & matched / retained: {row['passed_chain']}\n"
+                    f"  not retained: {row['did_not_pass_chain']}\n\n"
                 )
                 self._plot_chain(row)
                 self._plot_efficiency(row)

@@ -115,23 +115,28 @@ YEAR_RUN_RANGES = {
 }
 
 # The 2024 research release currently contains collision data for these two
-# periods.  These inclusive bounds are the Run-2 data-taking ranges used by
-# the release; do not derive a data menu from a dataset name.
+# periods.  Data uses the same run ranges as the MC random run numbers, so
+# collision events from runs MC does not model are rejected by the trigger
+# selection.  The release also contains earlier 2015 runs (266904-276261):
+# commissioning and 50 ns runs whose menus lack the configured primaries
+# (HLT_e24_lhmedium_L1EM20VH, HLT_mu40) or ran without muon triggers.
 DATA_YEAR_RUN_RANGES = {
-    # 2015 collision data in the 2024 release starts at run 266904.  The MC
-    # random-run range intentionally remains unchanged above.
-    "2015": (266904, 284484),
-    "2016": (296939, 311481),
+    year: YEAR_RUN_RANGES[year] for year in ("2015", "2016")
 }
 
-# Collision files do not expose the MC-style, split AuxDyn match decorations
-# to uproot.  Their trigger decisions live in xTrigDecision's EF bitset and
-# the bit-to-chain mapping is embedded in MetaData/TriggerMenuJson_HLT.  Keep
-# the documented physics menu separate from the MC match-decoration menu.
+# Collision-data trigger chains.  They mirror SINGLE_LEPTON_TRIGGER_CHAINS
+# (the MC menu) so data and MC are selected with the same triggers.
+#
+# Collision files carry the same AnalysisTrigMatch_<chain>AuxDyn.TrigMatchedObjects
+# offline-lepton matches as MC; a file lacks a chain's branch only when no
+# lepton matched that chain in the whole file.  Unlike MC, data has
+# prescales, and the matches are recorded even when the chain was prescaled
+# away, so data also requires the chain's HLT physics decision from
+# xTrigDecision (bit-to-chain mapping in MetaData/TriggerMenuJson_HLT).
 DATA_SINGLE_LEPTON_TRIGGER_CHAINS = {
     "2015": {
         "Electrons": [
-            "HLT_e24_lhmedium_iloose_L1EM20VH",
+            "HLT_e24_lhmedium_L1EM20VH",
             "HLT_e60_lhmedium",
             "HLT_e120_lhloose",
         ],
@@ -154,9 +159,28 @@ DATA_SINGLE_LEPTON_TRIGGER_CHAINS = {
 }
 
 TRIGGER_DECISION_SMK_BRANCH = "xTrigDecisionAux./xTrigDecisionAux.smk"
-TRIGGER_DECISION_TAV_BRANCH = "xTrigDecisionAux./xTrigDecisionAux.tav"
+# HLT chain counters index the HLT ("ef") bitsets.  ``tav``/``tap``/``tbp``
+# are Level-1 CTP bitsets and must not be decoded with HLT counters.
+# ``efPassedPhysics`` is the decision TrigDecisionTool::isPassed reports
+# (passed, not prescaled, not resurrected).
+TRIGGER_DECISION_HLT_PHYSICS_BRANCH = "xTrigDecisionAux./xTrigDecisionAux.efPassedPhysics"
 TRIGGER_MENU_KEY_BRANCH = "TriggerMenuJson_HLTAux./TriggerMenuJson_HLTAux.key"
 TRIGGER_MENU_PAYLOAD_BRANCH = "TriggerMenuJson_HLTAux./TriggerMenuJson_HLTAux.payload"
+
+
+def data_trigger_match_branch(chain: str) -> str:
+    """Return the TrigMatchedObjects branch of a collision-data chain."""
+    return f"AnalysisTrigMatch_{chain}{TRIGGER_BRANCH_SUFFIX}"
+
+
+def get_data_trigger_match_branches() -> list[str]:
+    """Return the match branches of every chain in DATA_SINGLE_LEPTON_TRIGGER_CHAINS."""
+    return sorted({
+        data_trigger_match_branch(chain)
+        for year_chains in DATA_SINGLE_LEPTON_TRIGGER_CHAINS.values()
+        for chains in year_chains.values()
+        for chain in chains
+    })
 
 
 RELEASE_TRIGGER_YEARS = {
