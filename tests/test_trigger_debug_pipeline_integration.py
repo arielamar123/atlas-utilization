@@ -246,3 +246,23 @@ def test_run_with_no_surviving_events_does_not_write_an_empty_chunk(tmp_path, mo
     assert context.parsed_files == []
     assert not list((tmp_path / "parsed_data").glob("*.root"))
     assert "No events survived the parsing selections" in caplog.text
+
+
+@pytest.mark.parametrize(("parse_mc", "trigger", "filtered"), [
+    (False, True, True), (False, False, True), (True, True, False), (True, False, False),
+])
+def test_collision_data_uses_the_same_runs_with_and_without_trigger_selection(
+    tmp_path, monkeypatch, parse_mc, trigger, filtered
+):
+    import orchestration.handlers.parsing_handler as handler_module
+
+    calls = []
+
+    def record(metadata):
+        calls.append(sorted(metadata))
+        return metadata
+
+    monkeypatch.setattr(handler_module, "filter_collision_files_by_run", record)
+    _run(tmp_path, parse_mc=parse_mc, trigger=trigger)
+
+    assert bool(calls) == filtered

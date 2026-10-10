@@ -6,6 +6,8 @@ Supports batch job splitting via batch_job_index / total_batch_jobs.
 """
 
 import os
+import re
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 import uproot
@@ -181,9 +183,11 @@ class ParsingHandler(StateHandler):
             parsing_config.release_years,
             list(metadata.keys()),
         )
-        if enable_trigger_matching and not parsing_config.parse_mc:
-            # Before batch splitting and max_files_to_process, so runs that
-            # the trigger selection rejects in full do not use the file budget.
+        if not parsing_config.parse_mc:
+            # Collision data uses only the MC-modelled runs, with or without
+            # trigger selection, so both modes read the same files.  Done
+            # before batch splitting and max_files_to_process so that runs
+            # outside the ranges do not use the file budget.
             metadata = filter_collision_files_by_run(metadata)
         batch_idx = context.config.batch_job_index
         total_batches = context.config.total_batch_jobs
@@ -214,6 +218,14 @@ class ParsingHandler(StateHandler):
         for release_year, file_urls in metadata.items():
             self.logger.info(
                 f"Parsing {len(file_urls)} files for release year: {release_year}"
+            )
+            datasets = Counter(
+                match.group(1) if (match := re.search(r"\.(\d+)\._\d+", url)) else "other"
+                for url in file_urls
+            )
+            self.logger.info(
+                "Files per dataset: %s",
+                ", ".join(f"{dataset} ({count})" for dataset, count in datasets.items()),
             )
             
             # Define callbacks

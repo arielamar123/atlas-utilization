@@ -3,11 +3,13 @@
 Every 2024r-pp collision-data rucio dataset (``DAOD_PHYSLITE.<dataset>._<n>``)
 holds a single run.  ``data_runs_2024r_pp.json`` maps each dataset to that
 run; it was built from EventInfo runNumber of the first and last file of every
-dataset.  Filtering files before batch splitting and ``max_files_to_process``
-keeps runs that the trigger selection would reject in full (for example the
-early-2015 commissioning runs that start the file list) from using the file
-budget.  Datasets missing from the table are kept; the per-event run check in
-the trigger selection still applies to them.
+dataset.  Collision data is restricted to the MC-modelled runs whether or not
+trigger selection is enabled, so both modes read the same files.  Filtering
+before batch splitting and ``max_files_to_process`` keeps runs outside the
+ranges (for example the early-2015 commissioning runs that start the file
+list) from using the file budget.  Datasets missing from the table are kept
+with a warning; with trigger selection enabled the per-event run check still
+applies to them.
 """
 
 from __future__ import annotations
