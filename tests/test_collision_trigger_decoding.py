@@ -94,3 +94,24 @@ def test_hlt_bits_are_decoded_batch_by_batch_without_keeping_bitsets():
     assert "_triggerDecisionRaw" not in result
     assert ak.to_list(result["_triggerDecision"][E24]) == [True, False, True, False, True]
     assert ak.to_list(result["Other"]["x"]) == [1, 2, 3, 4, 5]
+
+
+def _entry(*inner_sizes):
+    """Serialized vector<vector<ElementLink>>: header, outer size, inner vectors."""
+    link = bytes.fromhex("40000018 000067bf b0734000 000e0000 feb3df9e 3902fec0 00000000".replace(" ", ""))
+    body = len(inner_sizes).to_bytes(4, "big")
+    for n in inner_sizes:
+        body += n.to_bytes(4, "big") + link * n
+    return bytes.fromhex("4000") + (len(body) + 2).to_bytes(2, "big") + bytes.fromhex("0009") + body
+
+
+def test_trigger_matches_are_read_from_raw_entry_bytes():
+    raw = ak.Array([list(_entry()), list(_entry(1)), list(_entry(0)), list(_entry(0, 2))])
+
+    assert FileParser.trigger_matches_from_raw_entries(raw).tolist() == [False, True, False, True]
+    assert FileParser.trigger_matches_from_raw_entries(raw[:0]).tolist() == []
+
+
+def test_unexpected_raw_match_layout_is_reported():
+    truncated = list(_entry(1))[:-3]
+    assert FileParser.trigger_matches_from_raw_entries(ak.Array([truncated])) is None

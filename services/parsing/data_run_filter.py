@@ -31,6 +31,15 @@ def dataset_runs() -> dict[str, int]:
         return {str(dataset): int(run) for dataset, run in json.load(handle).items()}
 
 
+def collision_years_for_file(file_path: str) -> set[str] | None:
+    """Return the DATA_YEAR_RUN_RANGES years of a file's run, or None if unknown."""
+    match = _DATASET_PATTERN.search(str(file_path))
+    run = dataset_runs().get(match.group(1)) if match else None
+    if run is None:
+        return None
+    return {year for year, (lo, hi) in schemas.DATA_YEAR_RUN_RANGES.items() if lo <= run <= hi}
+
+
 def _run_in_ranges(run: int) -> bool:
     return any(lo <= run <= hi for lo, hi in schemas.DATA_YEAR_RUN_RANGES.values())
 

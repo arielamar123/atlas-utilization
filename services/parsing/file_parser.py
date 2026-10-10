@@ -9,11 +9,13 @@ import logging
 import json
 import awkward as ak
 import numpy as np
+import uproot
 import itertools
 from typing import Optional
 
 from services.parsing import schemas
 from services.parsing.root_io import open_root_file
+from services.parsing.data_run_filter import collision_years_for_file
 from services import consts
 
 
@@ -127,6 +129,8 @@ class FileParser:
 
         if not obj_branches:
             raise InvalidFileContentError(f"No particles found in schema for file {file_path}")
+        if enable_trigger_matching and not parse_mc:
+            FileParser._restrict_collision_match_branches(obj_branches, file_path)
 
         obj_branches = FileParser._filter_accessible_branches(tree, obj_branches)
 
@@ -135,15 +139,20 @@ class FileParser:
         if enable_trigger_matching and not parse_mc:
             FileParser._require_collision_trigger_branches(obj_branches, file_path)
 
+        collision_match_branches = None
+        if enable_trigger_matching and not parse_mc and "_triggerMatch" in obj_branches:
+            # Read separately as raw bytes (see _read_collision_matches).
+            collision_match_branches = list(obj_branches.pop("_triggerMatch"))
         all_branches = set(itertools.chain.from_iterable(obj_branches.values()))
-        batch_reducers = None
-        if enable_trigger_matching and not parse_mc and "_triggerDecisionRaw" in obj_branches:
-            batch_reducers = {
-                "_triggerDecisionRaw": (
+        batch_reducers = {}
+        if enable_trigger_matching and not parse_mc:
+            # Collision data: reduce trigger branches to per-event booleans
+            # batch by batch instead of keeping the raw bitsets and links.
+            if "_triggerDecisionRaw" in obj_branches:
+                batch_reducers["_triggerDecisionRaw"] = (
                     "_triggerDecision",
                     FileParser._collision_trigger_reducer(root_file, file_path),
                 )
-            }
         obj_events, read_error = FileParser._read_file_in_batches(
             tree,
             all_branches,
@@ -152,6 +161,10 @@ class FileParser:
             batch_size,
             batch_reducers,
         )
+        if collision_match_branches and "_dataRunNumber" in obj_events:
+            obj_events["_triggerMatch"] = FileParser._read_collision_matches(
+                tree, collision_match_branches, len(obj_events["_dataRunNumber"]), file_path
+            )
         obj_events = FileParser._split_combined_leptons(obj_events, release_year)
         if enable_jet_tagging:
             obj_events = FileParser._calculate_btagging_and_split(obj_events, jet_btagging_thresholds)
@@ -656,6 +669,89 @@ class FileParser:
                     })
         
         return result, read_error
+
+    @staticmethod
+    def _restrict_collision_match_branches(obj_branches: dict, file_path: str) -> None:
+        """Keep only the match branches of the chains for this file's run year.
+
+        Every collision-data dataset holds one run, so a file needs only its
+        year's chains.  Reading these nested ElementLink branches dominates the
+        trigger cost.  Files with an unknown run keep every chain.
+        """
+        years = collision_years_for_file(file_path)
+        if years is None or "_triggerMatch" not in obj_branches:
+            return
+        wanted = {
+            schemas.data_trigger_match_branch(chain)
+            for year in years
+            for chains in schemas.DATA_SINGLE_LEPTON_TRIGGER_CHAINS[year].values()
+            for chain in chains
+        }
+        kept = {b: q for b, q in obj_branches["_triggerMatch"].items() if b in wanted}
+        if kept:
+            obj_branches["_triggerMatch"] = kept
+        else:
+            obj_branches.pop("_triggerMatch")
+
+    @staticmethod
+    def _read_collision_matches(tree, branches: list[str], n_entries: int, file_path: str) -> ak.Array:
+        """Per event and chain: True if any trigger-matched combination is non-empty.
+
+        Same result as the MC path's ``any(num(raw, axis=2) > 0)``, but the
+        branches are read as raw entry bytes instead of being deserialized
+        into nested ElementLink records, which dominated the trigger cost.
+        """
+        raw_bytes = uproot.interpretation.jagged.AsJagged(uproot.AsDtype("u1"), header_bytes=0)
+        fields = {}
+        for branch in branches:
+            raw = tree[branch].array(interpretation=raw_bytes, entry_stop=n_entries, library="ak")
+            matched = FileParser.trigger_matches_from_raw_entries(raw)
+            if matched is None:
+                logging.warning(
+                    "Unexpected TrigMatchedObjects byte layout in %s for %s; "
+                    "deserializing the branch instead", file_path, branch,
+                )
+                objects = tree[branch].array(entry_stop=n_entries, library="ak")
+                matched = ak.to_numpy(ak.any(ak.num(objects, axis=2) > 0, axis=1))
+            fields[branch] = matched
+        return ak.zip({branch: ak.Array(values) for branch, values in fields.items()})
+
+    @staticmethod
+    def trigger_matches_from_raw_entries(raw: ak.Array) -> Optional[np.ndarray]:
+        """Decode ``vector<vector<ElementLink>>`` entries to "any non-empty inner vector".
+
+        Entry layout: 6-byte header (byte count, version), outer size (uint32,
+        big-endian), then per inner vector its size (uint32) followed by that
+        many ElementLink objects, each starting with a ROOT byte-count word.
+        Returns None if any entry does not follow this layout.
+        """
+        lengths = ak.to_numpy(ak.num(raw)).astype(np.int64)
+        if not len(lengths):
+            return np.zeros(0, dtype=bool)
+        flat = ak.to_numpy(ak.flatten(raw)).astype(np.uint8, copy=False)
+        starts = np.concatenate(([0], np.cumsum(lengths)[:-1])).astype(np.int64)
+        if np.any(lengths < 10):
+            return None
+        size_bytes = flat[starts[:, None] + np.arange(6, 10)].astype(np.uint64)
+        outer = (size_bytes * np.array([1 << 24, 1 << 16, 1 << 8, 1], dtype=np.uint64)).sum(axis=1)
+        if np.any(lengths[outer == 0] != 10):
+            return None
+        matched = np.zeros(len(lengths), dtype=bool)
+        for entry in np.nonzero(outer)[0]:
+            pos, end = int(starts[entry]) + 10, int(starts[entry] + lengths[entry])
+            for _ in range(int(outer[entry])):
+                if pos + 4 > end:
+                    return None
+                count = int.from_bytes(flat[pos:pos + 4].tobytes(), "big")
+                pos += 4
+                matched[entry] |= count > 0
+                for _ in range(count):
+                    if pos + 4 > end:
+                        return None
+                    pos += (int.from_bytes(flat[pos:pos + 4].tobytes(), "big") & 0x3FFFFFFF) + 4
+            if pos != end:
+                return None
+        return matched
 
     @staticmethod
     def _require_collision_trigger_branches(obj_branches: dict, file_path: str) -> None:
