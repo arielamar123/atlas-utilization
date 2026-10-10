@@ -111,7 +111,25 @@ def apply_parsing_event_selection(
             is_particle_counts_range=True,
         )
 
-    return _filter_events_by_non_jet_object_total(events)
+    events = _filter_events_by_non_jet_object_total(events)
+    return _drop_events_without_objects(events)
+
+
+def _drop_events_without_objects(events: ak.Array) -> ak.Array:
+    """Reject events with no retained object.
+
+    Invariant-mass calculation needs at least one object type
+    (min_particles_in_combination >= 1), so such events would be dropped
+    there anyway; dropping them here keeps them out of the parsed files.
+    """
+    object_fields = [field for field in events.fields if events[field].ndim > 1]
+    if not object_fields:
+        return events
+
+    total = ak.zeros_like(ak.num(events[object_fields[0]]), dtype=np.int64)
+    for field in object_fields:
+        total = total + ak.num(events[field])
+    return events[total > 0]
 
 
 def _filter_events_by_non_jet_object_total(events: ak.Array) -> ak.Array:
