@@ -57,6 +57,9 @@ class ParsingConfig:
     max_files_to_process: Optional[int] = None  # Limit files (for testing)
     enable_jet_tagging: bool = False
     jet_btagging_thresholds: Optional[dict] = None
+    # Collision data only: keep events from Good Runs List lumiblocks.
+    # Never applied to MC (parse_mc: true).
+    apply_grl: bool = True
 
     # Optional selection (from YAML): applied after reading each file, before chunking
     particle_counts: Optional[dict] = None
@@ -83,6 +86,8 @@ class ParsingConfig:
             raise ValueError("file_urls_path cannot be empty")
         if not self.jobs_logs_path:
             raise ValueError("jobs_logs_path cannot be empty")
+        if not isinstance(self.apply_grl, bool):
+            raise ValueError("apply_grl must be a boolean")
         if not isinstance(self.enable_jet_tagging, bool):
             raise ValueError("enable_jet_tagging must be a boolean")
         if self.enable_jet_tagging and not self.jet_btagging_thresholds:
@@ -336,6 +341,7 @@ class PipelineConfig:
                 max_files_to_process=parsing_dict.get("max_files_to_process"),
                 enable_jet_tagging=parsing_dict.get("enable_jet_tagging", False),
                 jet_btagging_thresholds=parsing_dict.get("jet_btagging_thresholds", None),
+                apply_grl=parsing_dict.get("apply_grl", True),
                 particle_counts=parsing_dict.get("particle_counts"),
                 kinematic_cuts=parsing_dict.get("kinematic_cuts"),
                 objects_to_store=objects,

@@ -24,11 +24,12 @@ from services.parsing.threaded_processor import ThreadedFileProcessor, ParsingSt
 from domain.statistics import ParsingStatistics
 from domain.events import EventBatch
 from services.parsing.event_selection import (
-    TriggerInformationUnavailableError,
-    apply_parsing_event_selection, apply_trigger_selection,
+    LumiBlockInformationUnavailableError, TriggerInformationUnavailableError,
+    apply_good_runs_list, apply_parsing_event_selection, apply_trigger_selection,
 )
 from services.parsing.schemas import normalize_release_year
 from services.parsing.data_run_filter import filter_collision_files_by_run
+from services.parsing.good_runs_list import good_run_numbers, release_has_grl
 from utils.batching import get_batch_slice_by_year
 from plots.trigger_debug.pipeline_hook import TriggerDebugHook
 
@@ -165,6 +166,12 @@ class ParsingHandler(StateHandler):
             "Lepton trigger selection is %s",
             "ENABLED" if enable_trigger_matching else "DISABLED",
         )
+        if not parsing_config.parse_mc:
+            self.logger.info(
+                "Good Runs List selection of collision data is %s",
+                "ENABLED" if parsing_config.apply_grl else "DISABLED",
+            )
+        grl_events_before = grl_events_after = 0
 
         start_time = datetime.now()
         stats_collector = ParsingStatisticsCollector()
@@ -188,7 +195,10 @@ class ParsingHandler(StateHandler):
             # trigger selection, so both modes read the same files.  Done
             # before batch splitting and max_files_to_process so that runs
             # outside the ranges do not use the file budget.
-            metadata = filter_collision_files_by_run(metadata)
+            metadata = filter_collision_files_by_run(
+                metadata,
+                good_runs=good_run_numbers() if parsing_config.apply_grl else None,
+            )
         batch_idx = context.config.batch_job_index
         total_batches = context.config.total_batch_jobs
 
@@ -227,6 +237,17 @@ class ParsingHandler(StateHandler):
                 "Files per dataset: %s",
                 ", ".join(f"{dataset} ({count})" for dataset, count in datasets.items()),
             )
+            # Never for MC; only for collision data the shipped GRLs describe.
+            apply_grl = (
+                parsing_config.apply_grl
+                and not parsing_config.parse_mc
+                and release_has_grl(release_year)
+            )
+            if parsing_config.apply_grl and not parsing_config.parse_mc and not apply_grl:
+                self.logger.warning(
+                    "No Good Runs List is available for %s; its collision data "
+                    "is not GRL-filtered", release_year,
+                )
             
             # Define callbacks
             def on_success(file_url: str, event_count: int, time_sec: float):
@@ -245,9 +266,39 @@ class ParsingHandler(StateHandler):
                 jet_btagging_thresholds=parsing_config.jet_btagging_thresholds,
                 enable_trigger_matching=enable_trigger_matching,
                 parse_mc=parsing_config.parse_mc,
+                apply_grl=apply_grl,
                 on_success=on_success,
                 on_error=on_error
             ):
+
+                # Collision data: drop events outside the Good Runs List,
+                # with or without trigger selection.
+                if apply_grl:
+                    events_before_grl = len(batch.events)
+                    try:
+                        filtered = apply_good_runs_list(batch.events, file_path=batch.file_url)
+                    except LumiBlockInformationUnavailableError as error:
+                        self.logger.warning(
+                            "Skipping %d events of %s: %s",
+                            events_before_grl, batch.file_url, error,
+                        )
+                        grl_events_before += events_before_grl
+                        continue
+                    grl_events_before += events_before_grl
+                    grl_events_after += len(filtered)
+                    batch = EventBatch(
+                        events=filtered,
+                        file_id=batch.file_id,
+                        file_url=batch.file_url,
+                        release_year=batch.release_year,
+                        size_bytes=(
+                            filtered.layout.nbytes
+                            if hasattr(filtered, "layout")
+                            else batch.size_bytes
+                        ),
+                        event_count=len(filtered),
+                        processing_time_sec=batch.processing_time_sec,
+                    )
 
                 # Apply single-lepton trigger matching if enabled,
                 # and always strip _triggerMatch before kinematic cuts
@@ -286,9 +337,9 @@ class ParsingHandler(StateHandler):
                     stats_collector.record_trigger_selection(
                         events_before_trigger, len(filtered)
                     )
-                elif any(field in batch.events.fields for field in ("_triggerMatch", "_runNumber", "_dataRunNumber")):
+                elif any(field in batch.events.fields for field in ("_triggerMatch", "_runNumber", "_dataRunNumber", "_dataLumiBlock")):
                     # Strip trigger fields even when not filtering
-                    clean = {f: batch.events[f] for f in batch.events.fields if f not in ("_triggerMatch", "_runNumber", "_dataRunNumber")}
+                    clean = {f: batch.events[f] for f in batch.events.fields if f not in ("_triggerMatch", "_runNumber", "_dataRunNumber", "_dataLumiBlock")}
                     cleaned_events = ak.zip(clean, depth_limit=1)
                     batch = EventBatch(
                         events=cleaned_events,
@@ -403,6 +454,11 @@ class ParsingHandler(StateHandler):
             f"Parsing complete: {parsing_stats.successful_files}/{parsing_stats.total_files} files, "
             f"{parsing_stats.total_events} events, {parsing_stats.success_rate:.1f}% success rate"
         )
+        if grl_events_before:
+            self.logger.info(
+                "Good Runs List retained %d / %d parsed collision-data events",
+                grl_events_after, grl_events_before,
+            )
         if enable_trigger_matching:
             self.logger.info(
                 "Lepton trigger selection retained %d / %d parsed events",

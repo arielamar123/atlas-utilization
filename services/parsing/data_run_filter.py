@@ -9,7 +9,9 @@ before batch splitting and ``max_files_to_process`` keeps runs outside the
 ranges (for example the early-2015 commissioning runs that start the file
 list) from using the file budget.  Datasets missing from the table are kept
 with a warning; with trigger selection enabled the per-event run check still
-applies to them.
+applies to them.  With the Good Runs List enabled, datasets of runs without
+any good lumiblock are dropped as well; the per-event GRL check still applies
+to the rest.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import logging
 import re
 from functools import lru_cache
 from pathlib import Path
+from typing import Collection
 
 from services.parsing import schemas
 
@@ -47,14 +50,21 @@ def _run_in_ranges(run: int) -> bool:
 
 
 def filter_collision_files_by_run(
-    metadata: dict[str, list[str]], runs: dict[str, int] | None = None
+    metadata: dict[str, list[str]],
+    runs: dict[str, int] | None = None,
+    good_runs: Collection[int] | None = None,
 ) -> dict[str, list[str]]:
-    """Remove files of datasets whose run is outside DATA_YEAR_RUN_RANGES."""
+    """Remove files of datasets whose run is outside DATA_YEAR_RUN_RANGES.
+
+    With ``good_runs`` (the Good Runs List runs), also remove files of
+    datasets whose run is not in it.
+    """
     runs = dataset_runs() if runs is None else runs
     logger = logging.getLogger(__name__)
     filtered = {}
     for key, urls in metadata.items():
         kept, dropped_runs, unknown, unknown_files = [], set(), set(), 0
+        bad_runs, bad_files = set(), 0
         for url in urls:
             match = _DATASET_PATTERN.search(url)
             run = runs.get(match.group(1)) if match else None
@@ -62,16 +72,25 @@ def filter_collision_files_by_run(
                 unknown.add(match.group(1) if match else url)
                 unknown_files += 1
                 kept.append(url)
-            elif _run_in_ranges(run):
-                kept.append(url)
-            else:
+            elif not _run_in_ranges(run):
                 dropped_runs.add(run)
-        if len(kept) != len(urls):
+            elif good_runs is not None and run not in good_runs:
+                bad_runs.add(run)
+                bad_files += 1
+            else:
+                kept.append(url)
+        if dropped_runs:
             logger.info(
                 "%s: dropped %d / %d collision-data files from %d runs outside "
                 "the MC-modelled ranges %s (runs %d-%d)",
-                key, len(urls) - len(kept), len(urls), len(dropped_runs),
+                key, len(urls) - len(kept) - bad_files, len(urls), len(dropped_runs),
                 schemas.DATA_YEAR_RUN_RANGES, min(dropped_runs), max(dropped_runs),
+            )
+        if bad_runs:
+            logger.info(
+                "%s: dropped %d / %d collision-data files from %d runs without "
+                "Good Runs List lumiblocks: %s",
+                key, bad_files, len(urls), len(bad_runs), sorted(bad_runs),
             )
         if unknown:
             logger.warning(

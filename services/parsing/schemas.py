@@ -107,6 +107,8 @@ RANDOM_RUN_NUMBER_BRANCH = "EventInfoAuxDyn.RandomRunNumber"
 # pile-up random run number.  Keep the two branch names distinct so callers
 # cannot accidentally use an MC menu for collision data (or vice versa).
 DATA_RUN_NUMBER_BRANCH = "EventInfoAuxDyn.runNumber"
+# Collision data: the lumiblock of each event, checked against the GRL.
+DATA_LUMI_BLOCK_BRANCH = "EventInfoAuxDyn.lumiBlock"
 YEAR_RUN_RANGES = {
     "2015": (276262, 284484),
     "2016": (296939, 311481),

@@ -60,6 +60,7 @@ class FileParser:
         jet_btagging_thresholds: Optional[dict[str, float]] = None,
         enable_trigger_matching: bool = False,
         parse_mc: bool = False,
+        apply_grl: bool = False,
     ) -> Optional[ak.Array]:
         """
         Parse a single ROOT file and return events.
@@ -69,6 +70,9 @@ class FileParser:
             tree_names: List of possible tree names to search for
             release_year: Release year identifier (e.g., "2024r-pp")
             batch_size: Number of entries to process per batch
+            apply_grl: Collision data only: also read each event's run and
+                lumiblock (``_dataRunNumber``, ``_dataLumiBlock``) for the
+                Good Runs List selection.  Ignored for MC.
             
         Returns:
             Awkward array of events with particle objects, or None after a
@@ -90,6 +94,7 @@ class FileParser:
                     jet_btagging_thresholds,
                     enable_trigger_matching,
                     parse_mc,
+                    apply_grl,
                 )
         except (PartialFileReadError, InvalidFileContentError):
             raise
@@ -112,8 +117,10 @@ class FileParser:
         jet_btagging_thresholds: Optional[dict[str, float]],
         enable_trigger_matching: bool,
         parse_mc: bool,
+        apply_grl: bool = False,
     ) -> Optional[ak.Array]:
         """Parse an already-opened ROOT file."""
+        apply_grl = apply_grl and not parse_mc
         tree_name = FileParser._get_data_tree_name(root_file.keys(), tree_names)
         tree = root_file[tree_name]
         all_tree_branches = set(tree.keys())
@@ -125,6 +132,7 @@ class FileParser:
             include_direct_objects=enable_jet_tagging,
             enable_trigger_matching=enable_trigger_matching,
             parse_mc=parse_mc,
+            apply_grl=apply_grl,
         )
 
         if not obj_branches:
@@ -138,6 +146,8 @@ class FileParser:
             raise InvalidFileContentError(f"No accessible particles found in file {file_path}")
         if enable_trigger_matching and not parse_mc:
             FileParser._require_collision_trigger_branches(obj_branches, file_path)
+        if apply_grl:
+            FileParser._require_good_runs_branches(obj_branches, file_path)
 
         collision_match_branches = None
         if enable_trigger_matching and not parse_mc and "_triggerMatch" in obj_branches:
@@ -273,6 +283,7 @@ class FileParser:
         include_direct_objects: bool = False,
         enable_trigger_matching: bool = False,
         parse_mc: bool = False,
+        apply_grl: bool = False,
     ) -> dict[str, dict[str, str]]:
         """
         Extract branches by object based on release-specific schema.
@@ -338,8 +349,6 @@ class FileParser:
             # contain both run-number decorations.
             if parse_mc and schemas.RANDOM_RUN_NUMBER_BRANCH in tree_branches:
                 obj_branches["_runNumber"] = {schemas.RANDOM_RUN_NUMBER_BRANCH: "_runNumber"}
-            elif not parse_mc and schemas.DATA_RUN_NUMBER_BRANCH in tree_branches:
-                obj_branches["_dataRunNumber"] = {schemas.DATA_RUN_NUMBER_BRANCH: "_dataRunNumber"}
             if not parse_mc:
                 decision_branches = {
                     schemas.TRIGGER_DECISION_SMK_BRANCH: "smk",
@@ -348,6 +357,15 @@ class FileParser:
                 # Missing branches are reported by _require_collision_trigger_branches.
                 if all(b in tree_branches for b in decision_branches):
                     obj_branches["_triggerDecisionRaw"] = decision_branches
+
+        # Collision data: the recorded run (trigger menu and GRL) and
+        # lumiblock (GRL).  Missing branches are reported by
+        # _require_collision_trigger_branches / _require_good_runs_branches.
+        if not parse_mc and (enable_trigger_matching or apply_grl):
+            if schemas.DATA_RUN_NUMBER_BRANCH in tree_branches:
+                obj_branches["_dataRunNumber"] = {schemas.DATA_RUN_NUMBER_BRANCH: "_dataRunNumber"}
+        if not parse_mc and apply_grl and schemas.DATA_LUMI_BLOCK_BRANCH in tree_branches:
+            obj_branches["_dataLumiBlock"] = {schemas.DATA_LUMI_BLOCK_BRANCH: "_dataLumiBlock"}
 
         return obj_branches
 
@@ -570,7 +588,7 @@ class FileParser:
                 bp: qty for bp, qty in branch_mapping.items()
                 if bp in accessible_set
             }
-            if obj_name in ("DirectObjects", "_triggerMatch", "_runNumber", "_dataRunNumber", "_triggerDecisionRaw"):
+            if obj_name in ("DirectObjects", "_triggerMatch", "_runNumber", "_dataRunNumber", "_dataLumiBlock", "_triggerDecisionRaw"):
                 # These are not particle types — skip the inv-mass field check.
                 if accessible_branches:
                     accessible_obj_branches[obj_name] = accessible_branches
@@ -662,6 +680,8 @@ class FileParser:
                     result[obj_name] = concatenated[schemas.RANDOM_RUN_NUMBER_BRANCH]
                 elif obj_name == "_dataRunNumber":
                     result[obj_name] = concatenated[schemas.DATA_RUN_NUMBER_BRANCH]
+                elif obj_name == "_dataLumiBlock":
+                    result[obj_name] = concatenated[schemas.DATA_LUMI_BLOCK_BRANCH]
                 else:
                     result[obj_name] = ak.zip({
                         quantity: concatenated[full_branch]
@@ -773,6 +793,23 @@ class FileParser:
             raise InvalidFileContentError(
                 f"Collision-data file {file_path} lacks readable trigger branches "
                 f"{missing}; its events cannot be trigger-selected"
+            )
+
+    @staticmethod
+    def _require_good_runs_branches(obj_branches: dict, file_path: str) -> None:
+        """Reject a collision-data file whose events cannot be checked against the GRL."""
+        missing = [
+            branch for name, branch in (
+                ("_dataRunNumber", schemas.DATA_RUN_NUMBER_BRANCH),
+                ("_dataLumiBlock", schemas.DATA_LUMI_BLOCK_BRANCH),
+            )
+            if branch not in obj_branches.get(name, {})
+        ]
+        if missing:
+            raise InvalidFileContentError(
+                f"Collision-data file {file_path} lacks readable run/lumiblock "
+                f"branches {missing}; its events cannot be checked against the "
+                "Good Runs List"
             )
 
     @staticmethod

@@ -13,7 +13,7 @@ import logging
 import numpy as np
 
 from services.calculations import physics_calcs
-from services.parsing import schemas
+from services.parsing import good_runs_list, schemas
 
 YAML_PARTICLE_KEYS: Dict[str, str] = {
     "electrons": "Electrons",
@@ -29,6 +29,9 @@ MAX_NON_JET_OBJECTS = 4
 
 class TriggerInformationUnavailableError(ValueError):
     """Collision-data events lack the trigger information needed to select them."""
+
+class LumiBlockInformationUnavailableError(ValueError):
+    """Collision-data events lack the run/lumiblock needed for the Good Runs List."""
 
 def canonical_particle_field_name(key: str) -> str:
     return YAML_PARTICLE_KEYS.get(key.lower(), key)
@@ -154,6 +157,47 @@ def retain_objects_for_storage(
             for field in events.fields
             if field in objects_to_store
         },
+        depth_limit=1,
+    )
+
+
+def apply_good_runs_list(
+    events: ak.Array,
+    file_path: str = "",
+    good: Optional[Dict[int, Any]] = None,
+) -> ak.Array:
+    """
+    Keep only collision-data events from Good Runs List lumiblocks.
+
+    Collision data only; MC has no GRL.  Needs ``_dataRunNumber`` and
+    ``_dataLumiBlock``.  ``_dataLumiBlock`` is dropped from the output;
+    ``_dataRunNumber`` is kept for the trigger selection.  ``good`` is
+    {run: [(first, last lumiblock), ...]} and defaults to the shipped GRLs.
+    """
+    missing = [f for f in ("_dataRunNumber", "_dataLumiBlock") if f not in events.fields]
+    if missing:
+        raise LumiBlockInformationUnavailableError(
+            f"Good Runs List selection requires {missing}, but they were not "
+            f"read from collision-data file {file_path}"
+        )
+
+    good = good_runs_list.good_lumiblocks() if good is None else good
+    runs = ak.to_numpy(events["_dataRunNumber"])
+    lumiblocks = ak.to_numpy(events["_dataLumiBlock"])
+    keep = good_runs_list.in_good_lumiblocks(runs, lumiblocks, good)
+
+    n_total = len(events)
+    n_pass = int(np.sum(keep))
+    logging.getLogger(__name__).info(
+        "Good Runs List: %d / %d events in good lumiblocks (%.1f%%); "
+        "%d events from runs outside the GRL in %s",
+        n_pass, n_total, 100 * n_pass / n_total if n_total else 0,
+        int(np.sum(~np.isin(runs, list(good)))), file_path,
+    )
+
+    filtered = events[keep]
+    return ak.zip(
+        {f: filtered[f] for f in filtered.fields if f != "_dataLumiBlock"},
         depth_limit=1,
     )
 

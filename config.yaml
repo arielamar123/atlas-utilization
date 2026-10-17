@@ -84,6 +84,7 @@ parsing_task_config:
     - "2024r-pp"
   specific_record_ids: null              # list of CERN record IDs, or null for all
   parse_mc: true
+  apply_grl: true                        # collision data (2024r-pp) only: keep Good Runs List lumiblocks; never applied to MC
 
   # ===PERFORMANCE===
   use_multiprocessing: true

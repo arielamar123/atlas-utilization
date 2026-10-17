@@ -113,6 +113,9 @@ def _config(run_dir, parse_mc=False, trigger=True, batch=None):
             "release_years": ["2024r-pp"],
             "parse_mc": parse_mc,
             "show_progress_bar": False,
+            # The synthetic runs have no lumiblocks; the GRL is covered by
+            # tests/test_good_runs_list.py.
+            "apply_grl": False,
         },
     }, str(run_dir))
     return PipelineConfig.from_dict(config_dict)
@@ -258,7 +261,7 @@ def test_collision_data_uses_the_same_runs_with_and_without_trigger_selection(
 
     calls = []
 
-    def record(metadata):
+    def record(metadata, **_kwargs):
         calls.append(sorted(metadata))
         return metadata
 
