@@ -1,17 +1,8 @@
-"""Drop collision-data files whose run lies outside the MC-modelled ranges.
+"""Collision-data provenance and optional GRL-aware file prefiltering.
 
-Every 2024r-pp collision-data rucio dataset (``DAOD_PHYSLITE.<dataset>._<n>``)
-holds a single run.  ``data_runs_2024r_pp.json`` maps each dataset to that
-run; it was built from EventInfo runNumber of the first and last file of every
-dataset.  Collision data is restricted to the MC-modelled runs whether or not
-trigger selection is enabled, so both modes read the same files.  Filtering
-before batch splitting and ``max_files_to_process`` keeps runs outside the
-ranges (for example the early-2015 commissioning runs that start the file
-list) from using the file budget.  Datasets missing from the table are kept
-with a warning; with trigger selection enabled the per-event run check still
-applies to them.  With the Good Runs List enabled, datasets of runs without
-any good lumiblock are dropped as well; the per-event GRL check still applies
-to the rest.
+Recorded data is never filtered with MC ``RandomRunNumber`` ranges.  A known
+dataset run may be skipped only when it has no run entry in the selected GRL;
+the definitive GRL decision remains per event and lumiblock.
 """
 
 from __future__ import annotations
@@ -22,8 +13,6 @@ import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Collection
-
-from services.parsing import schemas
 
 _DATASET_RUNS_FILE = Path(__file__).with_name("data_runs_2024r_pp.json")
 _DATASET_PATTERN = re.compile(r"DAOD_PHYSLITE\.(\d+)\._\d+")
@@ -36,17 +25,27 @@ def dataset_runs() -> dict[str, int]:
         return {str(dataset): int(run) for dataset, run in json.load(handle).items()}
 
 
-def collision_years_for_file(file_path: str) -> set[str] | None:
-    """Return the DATA_YEAR_RUN_RANGES years of a file's run, or None if unknown."""
+def collision_year_for_file(file_path: str) -> str | None:
+    """Return the data-taking year encoded by the immutable dataset path.
+
+    This intentionally does not inspect an MC-derived run interval.  Callers
+    must treat ``None`` as missing provenance, not as a physical rejection.
+    """
+    from services.parsing import schemas
+
+    path = str(file_path)
+    matches = {
+        year for tag, year in schemas.DATA_PROVENANCE_YEARS.items() if tag in path
+    }
+    if len(matches) == 1:
+        return matches.pop()
+    return None
+
+
+def known_run_for_file(file_path: str) -> int | None:
+    """Return the cached dataset run when the URI has a known Rucio DID."""
     match = _DATASET_PATTERN.search(str(file_path))
-    run = dataset_runs().get(match.group(1)) if match else None
-    if run is None:
-        return None
-    return {year for year, (lo, hi) in schemas.DATA_YEAR_RUN_RANGES.items() if lo <= run <= hi}
-
-
-def _run_in_ranges(run: int) -> bool:
-    return any(lo <= run <= hi for lo, hi in schemas.DATA_YEAR_RUN_RANGES.values())
+    return dataset_runs().get(match.group(1)) if match else None
 
 
 def filter_collision_files_by_run(
@@ -54,16 +53,16 @@ def filter_collision_files_by_run(
     runs: dict[str, int] | None = None,
     good_runs: Collection[int] | None = None,
 ) -> dict[str, list[str]]:
-    """Remove files of datasets whose run is outside DATA_YEAR_RUN_RANGES.
+    """Optionally skip known files whose run has no GRL lumiblocks.
 
-    With ``good_runs`` (the Good Runs List runs), also remove files of
-    datasets whose run is not in it.
+    This is only an I/O optimization.  Unknown datasets and every known run
+    when no GRL is supplied are retained, including early and future runs.
     """
     runs = dataset_runs() if runs is None else runs
     logger = logging.getLogger(__name__)
     filtered = {}
     for key, urls in metadata.items():
-        kept, dropped_runs, unknown, unknown_files = [], set(), set(), 0
+        kept, unknown, unknown_files = [], set(), 0
         bad_runs, bad_files = set(), 0
         for url in urls:
             match = _DATASET_PATTERN.search(url)
@@ -72,20 +71,11 @@ def filter_collision_files_by_run(
                 unknown.add(match.group(1) if match else url)
                 unknown_files += 1
                 kept.append(url)
-            elif not _run_in_ranges(run):
-                dropped_runs.add(run)
             elif good_runs is not None and run not in good_runs:
                 bad_runs.add(run)
                 bad_files += 1
             else:
                 kept.append(url)
-        if dropped_runs:
-            logger.info(
-                "%s: dropped %d / %d collision-data files from %d runs outside "
-                "the MC-modelled ranges %s (runs %d-%d)",
-                key, len(urls) - len(kept) - bad_files, len(urls), len(dropped_runs),
-                schemas.DATA_YEAR_RUN_RANGES, min(dropped_runs), max(dropped_runs),
-            )
         if bad_runs:
             logger.info(
                 "%s: dropped %d / %d collision-data files from %d runs without "
@@ -95,8 +85,8 @@ def filter_collision_files_by_run(
         if unknown:
             logger.warning(
                 "%s: %d collision-data file(s) from datasets without a known run "
-                "are kept; their events are checked by run number during trigger "
-                "selection: %s",
+                "are kept; their events are checked by GRL and trigger metadata "
+                "during processing: %s",
                 key, unknown_files, sorted(unknown)[:10],
             )
         filtered[key] = kept

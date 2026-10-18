@@ -9,6 +9,7 @@ from plots.trigger_debug.real_data_trigger_debug import RealDataTriggerDebugger
 def test_trigger_debug_text_and_histogram_share_counts(tmp_path):
     events = ak.Array({
         "_dataRunNumber": [276300, 276300, 300000],
+        "_dataYear": ["2015", "2015", "2016"],
         "_triggerDecision": {
             "HLT_e24_lhmedium_L1EM20VH": [True, True, False],
             "HLT_mu26_ivarmedium": [False, False, True],

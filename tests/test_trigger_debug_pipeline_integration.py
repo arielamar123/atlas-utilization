@@ -38,6 +38,7 @@ def _events(rows):
     rows = [row if len(row) == 5 else (*row, set()) for row in rows]
     return ak.Array({
         "_dataRunNumber": [run for run, *_ in rows],
+        "_dataYear": ["2015" if run < 290000 else "2016" for run, *_ in rows],
         "_triggerDecision": {
             chain: [chain in fired for _, _, _, fired, _ in rows] for chain in CHAINS
         },
@@ -74,7 +75,7 @@ EXPECTED = {
     "HLT_e60_lhmedium": (2, 0, 2),
     "HLT_e120_lhloose": (2, 0, 2),
     "HLT_mu20_iloose_L1MU15": (1, 1, 0),
-    "HLT_mu40": (1, 0, 1),
+    "HLT_mu50": (1, 0, 1),
     "HLT_e26_lhtight_nod0_ivarloose": (2, 1, 1),
     "HLT_e60_lhmedium_nod0": (2, 0, 2),
     "HLT_e140_lhloose_nod0": (2, 0, 2),

@@ -12,7 +12,7 @@ import awkward as ak
 import logging
 import numpy as np
 
-from services.calculations import physics_calcs
+from services.calculations import physics_calcs, consts
 from services.parsing import good_runs_list, schemas
 
 YAML_PARTICLE_KEYS: Dict[str, str] = {
@@ -207,6 +207,8 @@ def apply_trigger_selection(
     release_year: str = "2024r-pp",
     file_path: str = "",
     parse_mc: bool = False,
+    collision_kinematic_cuts: Optional[Dict[str, Any]] = None,
+    collision_allowed_objects: Optional[tuple[str, ...]] = None,
 ) -> ak.Array:
     """
     Keep only events where at least one lepton fired a single-lepton trigger.
@@ -223,7 +225,12 @@ def apply_trigger_selection(
     MC path below is unchanged from master.
     """
     if not parse_mc:
-        return _apply_collision_trigger_selection(events, file_path)
+        return _apply_collision_trigger_selection(
+            events,
+            file_path,
+            collision_kinematic_cuts=collision_kinematic_cuts,
+            collision_allowed_objects=collision_allowed_objects,
+        )
 
     logger = logging.getLogger(__name__)
 
@@ -291,22 +298,83 @@ def apply_trigger_selection(
     return ak.zip(particle_fields, depth_limit=1)
 
 
-def _apply_collision_trigger_selection(events: ak.Array, file_path: str = "") -> ak.Array:
-    """
-    Collision-data counterpart of the MC trigger selection.
+def _collision_selected_lepton_masks(
+    events: ak.Array,
+    kinematic_cuts: Optional[Dict[str, Any]],
+    allowed_objects: Optional[tuple[str, ...]],
+) -> Dict[str, ak.Array]:
+    """Return the parsing-stage offline lepton masks without reordering them."""
+    masks: Dict[str, ak.Array] = {}
+    for field, yaml_name in (("Electrons", "electrons"), ("Muons", "muons")):
+        particles = events[field] if field in events.fields else None
+        if particles is None:
+            continue
+        # Test fixtures and callers that request no object cuts need not
+        # materialize kinematic fields; local indices preserve the jagged
+        # offline-object shape in either case.
+        mask = ak.ones_like(ak.local_index(particles, axis=1), dtype=bool)
+        if allowed_objects is not None and field not in allowed_objects:
+            masks[field] = mask & False
+            continue
+        raw = (kinematic_cuts or {}).get(yaml_name, (kinematic_cuts or {}).get(field, {}))
+        cuts = normalize_yaml_kinematic_cuts(raw) if isinstance(raw, dict) else {}
+        if "pt" in cuts:
+            if not hasattr(particles, "pt"):
+                raise TriggerInformationUnavailableError(f"{field} is missing configured kinematic field 'pt'")
+            mask = mask & (ak.values_astype(particles.pt, float) >= cuts["pt"]["min"])
+        if "eta" in cuts:
+            if not hasattr(particles, "eta"):
+                raise TriggerInformationUnavailableError(f"{field} is missing configured kinematic field 'eta'")
+            eta = ak.values_astype(particles.eta, float)
+            mask = mask & (eta >= cuts["eta"]["min"]) & (eta <= cuts["eta"]["max"])
+        if "phi" in cuts:
+            if not hasattr(particles, "phi"):
+                raise TriggerInformationUnavailableError(f"{field} is missing configured kinematic field 'phi'")
+            phi = ak.values_astype(particles.phi, float)
+            mask = mask & (phi >= cuts["phi"]["min"]) & (phi <= cuts["phi"]["max"])
+        if field == "Electrons" and cuts.get("rel_isolation_max") is not None:
+            iso_name = consts.ELECTRON_REL_ISOLATION_FIELD
+            if not hasattr(particles, iso_name):
+                raise TriggerInformationUnavailableError(
+                    f"Electron trigger matching requires configured isolation field {iso_name!r}"
+                )
+            pt = ak.values_astype(particles.pt, float)
+            iso = ak.values_astype(getattr(particles, iso_name), float)
+            mask = mask & (iso / ak.where(pt > 0, pt, np.inf) < cuts["rel_isolation_max"])
+        masks[field] = mask
+    return masks
 
-    As in MC, a chain accepts an event when an offline lepton is matched to it
-    (``_triggerMatch``, from AnalysisTrigMatch TrigMatchedObjects).  Collision
-    data also has prescales and the matches are recorded even for prescaled
-    chains, so the chain's HLT physics decision (``_triggerDecision``) must
-    pass as well.  Each event's menu is chosen by its recorded run number;
-    runs outside the MC-modelled ranges are rejected.
-    """
-    logger = logging.getLogger(__name__)
 
+def _selected_match(mask: ak.Array, selected: Optional[ak.Array]) -> ak.Array:
+    """Intersect a collision match mask with selected offline leptons.
+
+    Scalar masks are retained as a compatibility fallback for old in-memory
+    callers; parsed collision files always provide a jagged object mask.
+    """
+    if selected is None:
+        return ak.any(mask, axis=1) if mask.ndim > 1 else mask
+    if mask.ndim <= 1:
+        return mask
+    if not ak.all(ak.num(mask, axis=1) == ak.num(selected, axis=1)):
+        raise TriggerInformationUnavailableError(
+            "Collision trigger ElementLink mask does not align with its offline lepton collection"
+        )
+    return ak.any(mask & selected, axis=1)
+
+
+def evaluate_collision_trigger_selection(
+    events: ak.Array,
+    file_path: str = "",
+    collision_kinematic_cuts: Optional[Dict[str, Any]] = None,
+    collision_allowed_objects: Optional[tuple[str, ...]] = None,
+) -> ak.Array:
+    """Evaluate collision triggers with explicit PASS/FAIL/UNDETERMINED state.
+
+    A pass requires a fired configured chain and an ElementLink match to an
+    electron or muon that survives the parsing-stage object cuts.  This is
+    collision-only; the MC trigger path is intentionally separate.
+    """
     if "_triggerDecision" not in events.fields:
-        # Do not turn absent trigger metadata into an implicit pass (or an
-        # implicit fail).
         raise TriggerInformationUnavailableError(
             "No readable single-lepton trigger decision was supplied for "
             f"collision-data file {file_path}."
@@ -316,82 +384,104 @@ def _apply_collision_trigger_selection(events: ak.Array, file_path: str = "") ->
             "Collision-data trigger selection requires "
             f"'{schemas.DATA_RUN_NUMBER_BRANCH}', but it was not read from {file_path}"
         )
+    if "_dataYear" not in events.fields:
+        raise TriggerInformationUnavailableError(
+            "Collision-data trigger selection requires trusted dataset provenance "
+            "(data15_13TeV or data16_13TeV); no data-taking year was supplied "
+            f"for {file_path}."
+        )
 
     decisions = events["_triggerDecision"]
+    decision_available = decisions["_available"] if "_available" in decisions.fields else None
+    decision_in_menu = decisions["_inMenu"] if "_inMenu" in decisions.fields else None
     matches = events["_triggerMatch"] if "_triggerMatch" in events.fields else None
-    data_run = events["_dataRunNumber"]
-    no_event = ak.zeros_like(data_run, dtype=bool)
-    trigger_years = [
-        (year, (data_run >= lo) & (data_run <= hi))
-        for year, (lo, hi) in schemas.DATA_YEAR_RUN_RANGES.items()
-    ]
-
-    valid_data_run = no_event
-    for _, in_year in trigger_years:
-        valid_data_run = valid_data_run | in_year
-    invalid_count = int(ak.sum(~valid_data_run))
-    if invalid_count:
-        logger.warning(
-            "Rejecting %d / %d collision-data events from runs outside the "
-            "MC-modelled ranges %s in %s",
-            invalid_count, len(events), schemas.DATA_YEAR_RUN_RANGES, file_path,
-        )
-
-    electron_pass = no_event
-    muon_pass = no_event
-    for year, in_year in trigger_years:
-        year_chains = schemas.DATA_SINGLE_LEPTON_TRIGGER_CHAINS[year]
-        applicable_count = int(ak.sum(in_year))
-        if not applicable_count:
-            continue
-        available_electrons = [c for c in year_chains.get("Electrons", []) if c in decisions.fields]
-        available_muons = [c for c in year_chains.get("Muons", []) if c in decisions.fields]
-        if not available_electrons and not available_muons:
-            raise TriggerInformationUnavailableError(
-                f"No applicable trigger decisions are available for {year} "
-                f"events in {file_path}"
-            )
-        logger.info(
-            "Trigger menu %s: %d events; electron chains=%s; muon chains=%s",
-            year, applicable_count, available_electrons, available_muons,
-        )
-        for chains, flavour in ((available_electrons, "electron"), (available_muons, "muon")):
-            for chain in chains:
-                fired = in_year & decisions[chain]
-                branch = schemas.data_trigger_match_branch(chain)
-                # A file lacks a chain's match branch only when no lepton
-                # matched that chain anywhere in it.
-                matched = (
-                    matches[branch]
-                    if matches is not None and branch in matches.fields else no_event
-                )
-                chain_mask = fired & matched
-                logger.info(
-                    "Collision trigger %s (%s, %s): %d fired; %d with a matched %s",
-                    chain, year, file_path, int(ak.sum(fired)),
-                    int(ak.sum(chain_mask)), flavour,
-                )
-                if flavour == "electron":
-                    electron_pass = electron_pass | chain_mask
-                else:
-                    muon_pass = muon_pass | chain_mask
-
-    event_mask = electron_pass | muon_pass
-
-    n_total = len(events)
-    n_pass = int(ak.sum(event_mask))
-    logger.info(
-        "Trigger selection: %d / %d events pass (%.1f%%), "
-        "electron-only: %d, muon-only: %d",
-        n_pass, n_total, 100 * n_pass / n_total if n_total else 0,
-        int(ak.sum(electron_pass & ~muon_pass)),
-        int(ak.sum(muon_pass & ~electron_pass)),
+    selected_masks = _collision_selected_lepton_masks(
+        events, collision_kinematic_cuts, collision_allowed_objects
     )
+    years = events["_dataYear"]
+    empty = ak.zeros_like(events["_dataRunNumber"], dtype=bool)
+    passed, undetermined, known_year = empty, empty, empty
 
-    filtered = events[event_mask]
+    for year, menu in schemas.DATA_SINGLE_LEPTON_TRIGGER_CHAINS.items():
+        in_year = years == year
+        known_year = known_year | in_year
+        if not bool(ak.any(in_year)):
+            continue
+        for flavour, flavour_chains in menu.items():
+            for chain in flavour_chains:
+                if chain not in decisions.fields:
+                    # The decoder promises all configured chain fields.  A
+                    # missing field is malformed metadata, never a false bit.
+                    undetermined = undetermined | in_year
+                    continue
+                in_menu = (
+                    decision_in_menu[chain] if decision_in_menu is not None and chain in decision_in_menu.fields
+                    else ak.ones_like(empty, dtype=bool)
+                )
+                readable = (
+                    decision_available[chain] if decision_available is not None and chain in decision_available.fields
+                    else ak.ones_like(empty, dtype=bool)
+                )
+                fired = decisions[chain]
+                branch = schemas.data_trigger_match_branch(chain)
+                match_available = matches is not None and branch in matches.fields
+                matched = (
+                    _selected_match(matches[branch], selected_masks.get(flavour))
+                    if match_available else empty
+                )
+                # A chain absent from a valid menu cannot have fired.  A
+                # present-but-truncated HLT word, or a fired chain whose match
+                # decoration is absent, is undecidable unless another chain
+                # definitely passes.
+                chain_pass = in_year & in_menu & readable & fired & matched
+                passed = passed | chain_pass
+                undetermined = undetermined | (
+                    in_year & in_menu & (~readable | (fired & (not match_available)))
+                )
+
+    unsupported = ~known_year
+    undetermined = undetermined | unsupported
+    # A definite pass resolves an event even when another chain is unreadable.
+    undetermined = undetermined & ~passed
+    status = np.where(
+        ak.to_numpy(passed), "PASS",
+        np.where(ak.to_numpy(undetermined), "UNDETERMINED", "FAIL"),
+    )
+    return ak.zip({
+        "event_trigger_pass": passed,
+        "trigger_status": ak.Array(status),
+        "metadata_available": ~undetermined,
+        "selected_lepton_trigger_pass": passed,
+    })
+
+
+def _apply_collision_trigger_selection(
+    events: ak.Array,
+    file_path: str = "",
+    collision_kinematic_cuts: Optional[Dict[str, Any]] = None,
+    collision_allowed_objects: Optional[tuple[str, ...]] = None,
+) -> ak.Array:
+    """Apply only definite collision-data trigger passes.
+
+    Metadata failures are raised distinctly instead of silently becoming a
+    physical failure.  The handler records these as coverage failures.
+    """
+    result = evaluate_collision_trigger_selection(
+        events,
+        file_path,
+        collision_kinematic_cuts=collision_kinematic_cuts,
+        collision_allowed_objects=collision_allowed_objects,
+    )
+    undecidable = result.trigger_status == "UNDETERMINED"
+    if bool(ak.any(undecidable)):
+        raise TriggerInformationUnavailableError(
+            f"Trigger metadata is insufficient for {int(ak.sum(undecidable))} / "
+            f"{len(events)} collision-data event(s) in {file_path}"
+        )
+    filtered = events[result.event_trigger_pass]
     particle_fields = {
         f: filtered[f]
         for f in filtered.fields
-        if f not in ("_triggerMatch", "_triggerDecision", "_runNumber", "_dataRunNumber")
+        if f not in ("_triggerMatch", "_triggerDecision", "_runNumber", "_dataRunNumber", "_dataYear")
     }
     return ak.zip(particle_fields, depth_limit=1)

@@ -38,12 +38,26 @@ def test_hlt_bits_are_read_at_each_events_own_menu_counter():
     assert ak.to_list(decoded[MU20]) == [False, True, False, True]
 
 
-def test_chain_missing_from_menu_or_short_bitset_did_not_pass():
+def test_hlt_counter_word_boundaries_and_menu_change_are_exact():
+    chains = ("HLT_a", "HLT_b", "HLT_c", "HLT_d")
+    menus = {
+        10: {"chains": {chain: {"counter": str(counter)} for chain, counter in zip(chains, (31, 32, 63, 64))}},
+        11: {"chains": {chain: {"counter": str(counter)} for chain, counter in zip(chains, (64, 63, 32, 31))}},
+    }
+    decoded = _decode([10, 11], [_words(31, 32, 63, 64), _words(31, 32, 63, 64)], menus, chains)
+    assert ak.to_list(decoded["HLT_a"]) == [True, True]
+    assert ak.to_list(decoded["HLT_d"]) == [True, True]
+    assert ak.to_list(decoded._available["HLT_c"]) == [True, True]
+
+
+def test_chain_missing_from_menu_is_not_fired_and_short_bitset_is_unavailable():
     menus = {7: {"chains": {E24: {"counter": "255"}}}}
     decoded = _decode([7, 7], [_words(255), _words(size=2)], menus)
 
     assert ak.to_list(decoded[E24]) == [True, False]
     assert ak.to_list(decoded[MU20]) == [False, False]
+    assert ak.to_list(decoded._available[E24]) == [True, False]
+    assert ak.to_list(decoded._inMenu[MU20]) == [False, False]
 
 
 def test_event_smk_without_menu_is_an_explicit_error():
@@ -55,12 +69,10 @@ def test_data_reads_hlt_physics_not_level1_bitset():
     assert schemas.TRIGGER_DECISION_HLT_PHYSICS_BRANCH.endswith(".efPassedPhysics")
 
 
-def test_data_menu_mirrors_mc_menu_for_collision_years():
-    mc_prefix = "AnalysisTrigMatch_"
-    for year, flavours in schemas.DATA_SINGLE_LEPTON_TRIGGER_CHAINS.items():
-        for flavour, chains in flavours.items():
-            mc = schemas.SINGLE_LEPTON_TRIGGER_CHAINS[year][flavour]
-            assert chains == [chain.removeprefix(mc_prefix) for chain in mc]
+def test_data_2015_menu_uses_documented_mu50_without_changing_mc():
+    assert "HLT_mu50" in schemas.DATA_SINGLE_LEPTON_TRIGGER_CHAINS["2015"]["Muons"]
+    assert "HLT_mu40" not in schemas.DATA_SINGLE_LEPTON_TRIGGER_CHAINS["2015"]["Muons"]
+    assert any("mu40" in chain for chain in schemas.SINGLE_LEPTON_TRIGGER_CHAINS["2015"]["Muons"])
 
 
 class _FakeTree:
@@ -110,6 +122,14 @@ def test_trigger_matches_are_read_from_raw_entry_bytes():
 
     assert FileParser.trigger_matches_from_raw_entries(raw).tolist() == [False, True, False, True]
     assert FileParser.trigger_matches_from_raw_entries(raw[:0]).tolist() == []
+
+
+def test_collision_raw_decoder_preserves_the_matched_offline_index():
+    index_one = _entry(1)[:-4] + (1).to_bytes(4, "big")
+    raw = ak.Array([list(index_one), list(_entry())])
+    assert FileParser.trigger_match_masks_from_raw_entries(raw, [2, 3]) == [
+        [False, True], [False, False, False],
+    ]
 
 
 def test_unexpected_raw_match_layout_is_reported():

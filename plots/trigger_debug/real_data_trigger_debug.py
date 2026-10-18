@@ -95,12 +95,12 @@ class RealDataTriggerDebugger:
         event passes a chain as in ``apply_trigger_selection``: the chain's HLT
         physics decision fired and an offline lepton is matched to it.
         """
-        required = {"_dataRunNumber", "_triggerDecision"}
+        required = {"_dataRunNumber", "_dataYear", "_triggerDecision"}
         missing = required - set(events.fields)
         if missing:
             raise ValueError(f"Trigger debug input lacks fields: {sorted(missing)}")
 
-        runs = events["_dataRunNumber"]
+        years = events["_dataYear"]
         decisions = events["_triggerDecision"]
         matches = events["_triggerMatch"] if "_triggerMatch" in events.fields else None
         for observation in self._observations.values():
@@ -109,8 +109,7 @@ class RealDataTriggerDebugger:
             object_name = "Electrons" if definition.flavour == "electron" else "Muons"
             if definition.chain not in decisions.fields or object_name not in events.fields:
                 continue
-            low, high = schemas.DATA_YEAR_RUN_RANGES[definition.year]
-            relevant = (runs >= low) & (runs <= high) & (ak.num(events[object_name]) > 0)
+            relevant = (years == definition.year) & (ak.num(events[object_name]) > 0)
             if not bool(ak.any(relevant)):
                 continue
             relevant_events = events[relevant]

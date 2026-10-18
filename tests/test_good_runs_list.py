@@ -61,17 +61,13 @@ def test_good_runs_list_selection_keeps_run_number_and_drops_lumiblock(caplog):
 
 def test_shipped_grls_are_the_standard_2015_2016_lists():
     good = good_runs_list.good_lumiblocks()
-    runs_2015 = [run for run in good if run <= schemas.DATA_YEAR_RUN_RANGES["2015"][1]]
-    runs_2016 = [run for run in good if run >= schemas.DATA_YEAR_RUN_RANGES["2016"][0]]
+    runs_2015 = [run for run in good if run < 290000]
+    runs_2016 = [run for run in good if run >= 290000]
 
     assert (len(runs_2015), len(runs_2016)) == (66, 151)
     assert len(good) == 217
     assert min(good) == 276262 and max(good) == 311481
     assert good[276262] == ((72, 84), (86, 110), (118, 288), (292, 379))
-    assert all(
-        any(lo <= run <= hi for lo, hi in schemas.DATA_YEAR_RUN_RANGES.values())
-        for run in good
-    )
     for ranges in good.values():
         assert all(start <= end for start, end in ranges)
         assert all(prev[1] < cur[0] for prev, cur in zip(ranges, ranges[1:]))
@@ -97,6 +93,7 @@ def test_trigger_selection_runs_on_grl_selected_events():
     events = ak.with_field(
         events, ak.Array({schemas.data_trigger_match_branch(D15): [True, True]}), "_triggerMatch"
     )
+    events = ak.with_field(events, ak.Array(["2015", "2015"]), "_dataYear")
 
     selected = apply_trigger_selection(apply_good_runs_list(events), parse_mc=False)
 
@@ -152,11 +149,10 @@ def test_runs_without_good_lumiblocks_are_dropped_before_the_file_budget(caplog)
 
     kept = filter_collision_files_by_run({"2024r-pp": urls}, runs, good_runs={276262})
 
-    # 266904: outside the MC ranges; 276330: no GRL lumiblocks; 4: unknown run.
+    # Both known runs have no GRL lumiblocks; 4 is unknown and stays.
     assert kept["2024r-pp"] == [urls[1], urls[3]]
-    assert "dropped 1 / 4 collision-data files from 1 runs outside" in caplog.text
-    assert "dropped 1 / 4 collision-data files from 1 runs without Good Runs List" in caplog.text
-    assert filter_collision_files_by_run({"2024r-pp": urls}, runs)["2024r-pp"] == urls[1:]
+    assert "dropped 2 / 4 collision-data files from 2 runs without Good Runs List" in caplog.text
+    assert filter_collision_files_by_run({"2024r-pp": urls}, runs)["2024r-pp"] == urls
 
 
 def test_grl_is_only_defined_for_the_2024r_pp_release():

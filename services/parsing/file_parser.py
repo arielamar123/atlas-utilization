@@ -15,7 +15,7 @@ from typing import Optional
 
 from services.parsing import schemas
 from services.parsing.root_io import open_root_file
-from services.parsing.data_run_filter import collision_years_for_file
+from services.parsing.data_run_filter import collision_year_for_file, known_run_for_file
 from services import consts
 
 
@@ -173,8 +173,27 @@ class FileParser:
         )
         if collision_match_branches and "_dataRunNumber" in obj_events:
             obj_events["_triggerMatch"] = FileParser._read_collision_matches(
-                tree, collision_match_branches, len(obj_events["_dataRunNumber"]), file_path
+                tree,
+                collision_match_branches,
+                len(obj_events["_dataRunNumber"]),
+                file_path,
+                electrons=obj_events.get("Electrons"),
+                muons=obj_events.get("Muons"),
             )
+        if enable_trigger_matching and not parse_mc:
+            # Dataset naming is the trusted source of the data-taking year.
+            # Do not infer it from the MC RandomRunNumber convention.
+            data_year = collision_year_for_file(file_path)
+            if data_year is not None:
+                obj_events["_dataYear"] = ak.Array([data_year] * len(obj_events["_dataRunNumber"]))
+            known_run = known_run_for_file(file_path)
+            if known_run is not None and "_dataRunNumber" in obj_events:
+                observed = np.unique(ak.to_numpy(obj_events["_dataRunNumber"])).tolist()
+                if observed != [known_run]:
+                    raise InvalidFileContentError(
+                        f"Dataset provenance says run {known_run}, but {file_path} contains "
+                        f"recorded run(s) {observed}"
+                    )
         obj_events = FileParser._split_combined_leptons(obj_events, release_year)
         if enable_jet_tagging:
             obj_events = FileParser._calculate_btagging_and_split(obj_events, jet_btagging_thresholds)
@@ -698,12 +717,11 @@ class FileParser:
         year's chains.  Reading these nested ElementLink branches dominates the
         trigger cost.  Files with an unknown run keep every chain.
         """
-        years = collision_years_for_file(file_path)
-        if years is None or "_triggerMatch" not in obj_branches:
+        year = collision_year_for_file(file_path)
+        if year is None or "_triggerMatch" not in obj_branches:
             return
         wanted = {
             schemas.data_trigger_match_branch(chain)
-            for year in years
             for chains in schemas.DATA_SINGLE_LEPTON_TRIGGER_CHAINS[year].values()
             for chain in chains
         }
@@ -714,27 +732,94 @@ class FileParser:
             obj_branches.pop("_triggerMatch")
 
     @staticmethod
-    def _read_collision_matches(tree, branches: list[str], n_entries: int, file_path: str) -> ak.Array:
-        """Per event and chain: True if any trigger-matched combination is non-empty.
+    def _read_collision_matches(
+        tree,
+        branches: list[str],
+        n_entries: int,
+        file_path: str,
+        electrons: Optional[ak.Array] = None,
+        muons: Optional[ak.Array] = None,
+    ) -> ak.Array:
+        """Decode collision ElementLinks into per-offline-lepton match masks.
 
-        Same result as the MC path's ``any(num(raw, axis=2) > 0)``, but the
-        branches are read as raw entry bytes instead of being deserialized
-        into nested ElementLink records, which dominated the trigger cost.
+        ``TrigMatchedObjects`` stores trigger-matching *combinations*, whose
+        ElementLinks carry the index of the matched offline object.  Reducing
+        that structure to an event boolean loses the identity needed to test
+        whether the analysis lepton (rather than any lepton in the event) was
+        matched.  This collision-only path retains one boolean per electron or
+        muon.  The MC reader is deliberately unchanged.
         """
-        raw_bytes = uproot.interpretation.jagged.AsJagged(uproot.AsDtype("u1"), header_bytes=0)
         fields = {}
+        raw_bytes = uproot.interpretation.jagged.AsJagged(uproot.AsDtype("u1"), header_bytes=0)
         for branch in branches:
-            raw = tree[branch].array(interpretation=raw_bytes, entry_stop=n_entries, library="ak")
-            matched = FileParser.trigger_matches_from_raw_entries(raw)
-            if matched is None:
-                logging.warning(
-                    "Unexpected TrigMatchedObjects byte layout in %s for %s; "
-                    "deserializing the branch instead", file_path, branch,
+            is_electron = "_HLT_e" in branch
+            objects = electrons if is_electron else muons
+            if objects is None:
+                raise InvalidFileContentError(
+                    f"Cannot associate {branch} in {file_path}: the required "
+                    f"{'electron' if is_electron else 'muon'} collection was not read"
                 )
-                objects = tree[branch].array(entry_stop=n_entries, library="ak")
-                matched = ak.to_numpy(ak.any(ak.num(objects, axis=2) > 0, axis=1))
-            fields[branch] = matched
-        return ak.zip({branch: ak.Array(values) for branch, values in fields.items()})
+            counts = ak.to_list(ak.num(objects, axis=1))
+            raw = tree[branch].array(interpretation=raw_bytes, entry_stop=n_entries, library="ak")
+            masks = FileParser.trigger_match_masks_from_raw_entries(raw, counts)
+            if masks is None:
+                raise InvalidFileContentError(
+                    f"Unexpected TrigMatchedObjects byte layout in {file_path} for {branch}; "
+                    "cannot safely retain offline-object identity"
+                )
+            fields[branch] = ak.Array(masks)
+        # Match masks have different jagged offsets for electron and muon
+        # chains, so only zip them into an event-level record.
+        return ak.zip(fields, depth_limit=1)
+
+    @staticmethod
+    def trigger_match_masks_from_raw_entries(raw: ak.Array, counts: list[int]) -> Optional[list[list[bool]]]:
+        """Decode ElementLink indices without materializing ElementLink records.
+
+        ROOT writes each link with a byte-count header followed by its payload;
+        ``m_persIndex`` is the final uint32 in the serialized link.  Keeping
+        that index is enough to form an offline-object mask and avoids the
+        prohibitively expensive deserialization of every link.
+        """
+        lengths = ak.to_numpy(ak.num(raw)).astype(np.int64)
+        if len(lengths) != len(counts):
+            return None
+        flat = ak.to_numpy(ak.flatten(raw)).astype(np.uint8, copy=False)
+        starts = np.concatenate(([0], np.cumsum(lengths)[:-1])).astype(np.int64)
+        masks: list[list[bool]] = []
+        for entry, (start, length, count) in enumerate(zip(starts, lengths, counts)):
+            end, pos = int(start + length), int(start)
+            if length < 10:
+                return None
+            outer = int.from_bytes(flat[pos + 6:pos + 10].tobytes(), "big")
+            pos += 10
+            if outer == 0:
+                if pos != end:
+                    return None
+                masks.append([False] * int(count))
+                continue
+            matched = [False] * int(count)
+            for _ in range(outer):
+                if pos + 4 > end:
+                    return None
+                inner = int.from_bytes(flat[pos:pos + 4].tobytes(), "big")
+                pos += 4
+                for _ in range(inner):
+                    if pos + 4 > end:
+                        return None
+                    size = int.from_bytes(flat[pos:pos + 4].tobytes(), "big") & 0x3FFFFFFF
+                    link_end = pos + size + 4
+                    if link_end > end or size < 4:
+                        return None
+                    index = int.from_bytes(flat[link_end - 4:link_end].tobytes(), "big")
+                    if index >= len(matched):
+                        return None
+                    matched[index] = True
+                    pos = link_end
+            if pos != end:
+                return None
+            masks.append(matched)
+        return masks
 
     @staticmethod
     def trigger_matches_from_raw_entries(raw: ak.Array) -> Optional[np.ndarray]:
@@ -885,16 +970,19 @@ class FileParser:
         smk, passed_words, menus: dict, chains: list[str], file_path: str = "",
         reported: Optional[set] = None,
     ) -> ak.Array:
-        """Return one boolean field per chain from per-event HLT bitsets.
+        """Return one decision and one availability field per configured chain.
 
         Bit ``counter`` of ``passed_words`` (word ``counter // 32``) is the
         chain's decision, where ``counter`` comes from the event's own SMK
-        menu.  A chain absent from that menu was not run, so it did not pass.
-        An SMK with no menu in the file is an error: its bits cannot be
-        interpreted.
+        menu.  A chain absent from a complete menu is *unavailable* for this
+        selection, not a false HLT decision.  ``_available[chain]`` records
+        whether the bit was actually present.  An SMK with no menu in the
+        file is an error: its bits cannot be interpreted.
         """
         smk = ak.to_numpy(smk).astype(np.int64)
         decoded = {chain: np.zeros(len(smk), dtype=bool) for chain in chains}
+        available = {chain: np.zeros(len(smk), dtype=bool) for chain in chains}
+        in_menu = {chain: np.zeros(len(smk), dtype=bool) for chain in chains}
         for key in np.unique(smk):
             if int(key) not in menus:
                 raise InvalidFileContentError(
@@ -910,19 +998,36 @@ class FileParser:
                 if entry is None:
                     missing.append(chain)
                     continue
-                word_index, bit = divmod(int(entry["counter"]), 32)
-                padded = ak.pad_none(words, word_index + 1, axis=1)
-                word = ak.to_numpy(ak.fill_none(padded[:, word_index], 0)).astype(np.uint64)
-                decoded[chain][selected] = ((word >> bit) & 1).astype(bool)
+                in_menu[chain][selected] = True
+                try:
+                    word_index, bit = divmod(int(entry["counter"]), 32)
+                except (KeyError, TypeError, ValueError) as error:
+                    raise InvalidFileContentError(
+                        f"Malformed counter for {chain} in SMK {int(key)} of {file_path}"
+                    ) from error
+                word_lengths = ak.to_numpy(ak.num(words, axis=1)).astype(np.int64)
+                complete = word_lengths > word_index
+                # Never pad missing words with zero: that turns corrupt or
+                # truncated metadata into a physical trigger failure.
+                values = np.zeros(len(words), dtype=bool)
+                if np.any(complete):
+                    present_words = ak.to_numpy(words[complete, word_index]).astype(np.uint64)
+                    values[complete] = ((present_words >> bit) & 1).astype(bool)
+                decoded[chain][selected] = values
+                available[chain][selected] = complete
             if missing and (reported is None or int(key) not in reported):
                 if reported is not None:
                     reported.add(int(key))
                 logging.info(
                     "Trigger menu SMK %d in %s does not contain chains %s; "
-                    "they did not run for its events",
+                    "they are unavailable for its events",
                     int(key), file_path, missing,
                 )
-        return ak.zip({chain: ak.Array(values) for chain, values in decoded.items()})
+        return ak.zip({
+            **{chain: ak.Array(values) for chain, values in decoded.items()},
+            "_available": ak.zip({chain: ak.Array(values) for chain, values in available.items()}),
+            "_inMenu": ak.zip({chain: ak.Array(values) for chain, values in in_menu.items()}),
+        })
     
     @staticmethod
     def _auto_detect_branches(

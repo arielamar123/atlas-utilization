@@ -116,18 +116,15 @@ YEAR_RUN_RANGES = {
     "2018": (348197, 364292),
 }
 
-# The 2024 research release currently contains collision data for these two
-# periods.  Data uses the same run ranges as the MC random run numbers, so
-# collision events from runs MC does not model are rejected by the trigger
-# selection.  The release also contains earlier 2015 runs (266904-276261):
-# commissioning and 50 ns runs whose menus lack the configured primaries
-# (HLT_e24_lhmedium_L1EM20VH, HLT_mu40) or ran without muon triggers.
-DATA_YEAR_RUN_RANGES = {
-    year: YEAR_RUN_RANGES[year] for year in ("2015", "2016")
-}
+# ``YEAR_RUN_RANGES`` above is an MC pile-up convention.  It must never be
+# used to decide whether recorded collision data is eligible.  Recorded-data
+# trigger menus are selected from data provenance (``data15_13TeV`` /
+# ``data16_13TeV``), checked against the event's recorded run, and then the
+# per-event GRL decides data quality.
 
-# Collision-data trigger chains.  They mirror SINGLE_LEPTON_TRIGGER_CHAINS
-# (the MC menu) so data and MC are selected with the same triggers.
+# Collision-data trigger chains.  This is deliberately separate from the MC
+# configuration: data uses the documented ATLAS analysis menu.  In particular
+# 2015 uses mu50, not mu40 (ATLAS Analysis SW trigger tutorial, 2025).
 #
 # Collision files carry the same AnalysisTrigMatch_<chain>AuxDyn.TrigMatchedObjects
 # offline-lepton matches as MC; a file lacks a chain's branch only when no
@@ -144,7 +141,7 @@ DATA_SINGLE_LEPTON_TRIGGER_CHAINS = {
         ],
         "Muons": [
             "HLT_mu20_iloose_L1MU15",
-            "HLT_mu40",
+            "HLT_mu50",
         ],
     },
     "2016": {
@@ -158,6 +155,15 @@ DATA_SINGLE_LEPTON_TRIGGER_CHAINS = {
             "HLT_mu50",
         ],
     },
+}
+
+# The source tags are part of the immutable Rucio dataset provenance.  They
+# are authoritative for selecting a configured collision-data menu; no MC
+# random-run-number interval is involved.  A source year not listed here is a
+# coverage error and must be surfaced to the caller.
+DATA_PROVENANCE_YEARS = {
+    "data15_13TeV": "2015",
+    "data16_13TeV": "2016",
 }
 
 TRIGGER_DECISION_SMK_BRANCH = "xTrigDecisionAux./xTrigDecisionAux.smk"

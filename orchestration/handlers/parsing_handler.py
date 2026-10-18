@@ -191,10 +191,9 @@ class ParsingHandler(StateHandler):
             list(metadata.keys()),
         )
         if not parsing_config.parse_mc:
-            # Collision data uses only the MC-modelled runs, with or without
-            # trigger selection, so both modes read the same files.  Done
-            # before batch splitting and max_files_to_process so that runs
-            # outside the ranges do not use the file budget.
+            # Only a known run with no GRL lumiblocks is prefiltered as an
+            # I/O optimization.  Never prefilter recorded data by MC
+            # RandomRunNumber ranges.
             metadata = filter_collision_files_by_run(
                 metadata,
                 good_runs=good_run_numbers() if parsing_config.apply_grl else None,
@@ -244,9 +243,9 @@ class ParsingHandler(StateHandler):
                 and release_has_grl(release_year)
             )
             if parsing_config.apply_grl and not parsing_config.parse_mc and not apply_grl:
-                self.logger.warning(
-                    "No Good Runs List is available for %s; its collision data "
-                    "is not GRL-filtered", release_year,
+                raise ValueError(
+                    "GRL application was requested for collision-data release "
+                    f"{release_year}, but no appropriate committed GRL is available"
                 )
             
             # Define callbacks
@@ -310,6 +309,14 @@ class ParsingHandler(StateHandler):
                             release_year=release_year,
                             file_path=batch.file_url,
                             parse_mc=parsing_config.parse_mc,
+                            # Used only by the collision-data implementation;
+                            # the established MC path ignores both arguments.
+                            collision_kinematic_cuts=(
+                                None if parsing_config.parse_mc else parsing_config.kinematic_cuts
+                            ),
+                            collision_allowed_objects=(
+                                None if parsing_config.parse_mc else parsing_config.objects_to_store
+                            ),
                         )
                     except TriggerInformationUnavailableError as error:
                         # Raised for collision data only: skip this file's
@@ -337,9 +344,9 @@ class ParsingHandler(StateHandler):
                     stats_collector.record_trigger_selection(
                         events_before_trigger, len(filtered)
                     )
-                elif any(field in batch.events.fields for field in ("_triggerMatch", "_runNumber", "_dataRunNumber", "_dataLumiBlock")):
+                elif any(field in batch.events.fields for field in ("_triggerMatch", "_runNumber", "_dataRunNumber", "_dataLumiBlock", "_dataYear", "_triggerDecision")):
                     # Strip trigger fields even when not filtering
-                    clean = {f: batch.events[f] for f in batch.events.fields if f not in ("_triggerMatch", "_runNumber", "_dataRunNumber", "_dataLumiBlock")}
+                    clean = {f: batch.events[f] for f in batch.events.fields if f not in ("_triggerMatch", "_triggerDecision", "_runNumber", "_dataRunNumber", "_dataLumiBlock", "_dataYear")}
                     cleaned_events = ak.zip(clean, depth_limit=1)
                     batch = EventBatch(
                         events=cleaned_events,
